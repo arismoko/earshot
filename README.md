@@ -26,13 +26,26 @@ A port of selfmonoraque5's [Earshot](https://github.com/selfmonoraque5/earshot) 
 - A **mic test** in the settings: hear yourself as the others would.
 - **Whisper** (Mouse 5, held): talk so only players close by hear you (the server sets how close).
 - **Voice groups**: create one (normal, open or isolated, with an optional password), join one with a click, leave it. Group members hear each
-  other at any distance, and a panel in the top-left corner lists them, lighting up whoever is talking. A **group volume**,
+  other at any distance, and a panel lists them (top left by default), lighting up whoever is talking. A **group volume**,
   and a short **chime** when someone joins or leaves your group (Earshot's own sound; it can be turned off).
 - **Group invites** show in chat in Earshot's own words, with the server's join link still clickable.
 - **Noise reduction**, **per-player volume**, **mute** and **deafen**.
 - A **mic icon** on the HUD (idle, talking, muted, voice off), and beside other players' name tags a **speaker icon**:
   green while they talk, red if they turned voice chat off, grey and crossed out if they aren't connected to voice
   (no voice chat mod) on a server that runs it.
+- The original's **client options**, under its names and defaults, in the voice menu's **Advanced** and **Icons** screens and
+  in `client.txt`:
+  - `voice_deactivation_delay` (25) and `ptt_deactivation_delay` (5): how many 20 ms frames the microphone stays on after
+    the voice falls quiet or the push-to-talk key is let go.
+  - `output_buffer_size` (5) and `audio_packet_threshold` (3): how many frames are collected before a voice plays, and
+    how many later frames (or ticks) a missing one is waited for before it is given up.
+  - `audio_type` (`NORMAL`, `REDUCED`, `OFF`): full left/right placement, a softer one that never silences an ear, or none.
+  - `mute_on_join` (off): start muted each time you join a world.
+  - `offline_player_volume_adjustment` (off): the Players screen also lists players with a saved volume who aren't online.
+  - `show_fake_players_disconnected` (off): mark players the voice server doesn't list (NPCs) with the not-connected icon.
+  - `hide_icons`, `show_nametag_icons`, `show_hud_icons`, `show_group_hud`, `show_own_group_icon`, `hud_icon_scale`,
+    `group_hud_icon_scale`, `group_player_icon_orientation` (`VERTICAL` or `HORIZONTAL`), and the four positions
+    `hud_icon_pos_x`/`_y` and `group_player_icon_pos_x`/`_y` (a negative position counts from the right or bottom).
 - Opus audio and AES-128-GCM encryption, as the server expects.
 
 ## Keys
@@ -43,10 +56,26 @@ A port of selfmonoraque5's [Earshot](https://github.com/selfmonoraque5/earshot) 
 | **Mouse 4** (side button) | Push to talk (hold, or press to switch: Settings in the voice menu) |
 | **Mouse 5** (other side button) | Whisper, while held |
 | **M** | Mute your microphone |
-| **N** | Deafen |
+| **N** | Disable voice chat (and enable it again) |
+| **H** | Hide or show the voice chat icons |
+| **G** | Group management: your group, or the list of groups to join |
+| Unbound | Voice chat settings; adjust volumes (the Players screen); deafen |
 
 Rebind them in Options > Controls. Options > Mods > Earshot > **Config** has a **Voice chat** switch and a **Debug info**
 switch for connection details.
+
+## Differences from Simple Voice Chat
+
+Earshot has the original's client features except those listed here.
+
+- **Not in Earshot:** automatic gain control and voice activity detection (the original's use native libraries; the
+  threshold mode here is a plain level), recording (including its key and options), onboarding, the group invite
+  button on the social screen (invites that arrive in chat work), and the macOS microphone check. The denoiser is
+  Earshot's own filter, not RNNoise.
+- **Different:** volume falls off with distance by Earshot's own curve, over the range the server sends. The disable key
+  turns voice chat off for the session; the **Voice chat** switch in Options > Mods keeps it off. The group panel shows
+  a speaker, not the player's head. Deafen is an addition of Earshot's, so it is unbound.
+- Menu and HUD text is English only.
 
 ## Works with
 

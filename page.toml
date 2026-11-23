@@ -1,0 +1,31 @@
+summary = "Proximity voice chat for servers running Simple Voice Chat: 3D audio, push to talk, whisper and voice groups."
+description = """
+Proximity voice chat for servers running Simple Voice Chat, written in Rust on Sunrise's mod API. Earshot is an independent project, not affiliated with Simple Voice Chat.
+
+What it does:
+
+- Talk to the players near you with 3D audio that fades with distance; push to talk (Mouse 4), voice activation with a live level, and a mic test.
+- Whisper (Mouse 5) so only players close by hear you.
+- Voice groups (normal, open or isolated, with an optional password), a group volume, a panel listing the members and a chime when someone joins or leaves.
+- A microphone icon on the HUD and a speaker beside other players' name tags; per-player volumes, mute, disable, deafen and hide-icons keys.
+- The original's client options under its own names and defaults: deactivation delays, buffer size and packet threshold, 3D audio type (normal, reduced, off), mute on join, offline player volumes, and which icons show, how big they are and where.
+
+Differences from the original:
+
+- No automatic gain control, voice activity detection, recording, onboarding or social-screen invite button; the denoiser is Earshot's own filter.
+- Volume falls off by Earshot's own curve; the group panel shows a speaker instead of the player's head; menu text is English only.
+- This version does not host voice on dedicated servers; it joins servers that run Simple Voice Chat.
+"""
+categories = ["social"]
+
+[[screenshots]]
+path = "screenshots/voice-menu.png"
+caption = "The voice menu."
+
+[[screenshots]]
+path = "screenshots/settings.png"
+caption = "Settings: volumes, push to talk, mic test and devices."
+
+[[screenshots]]
+path = "screenshots/create-group.png"
+caption = "Creating a voice group."
