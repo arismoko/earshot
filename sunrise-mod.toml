@@ -2,7 +2,7 @@ id = "earshot"
 name = "Earshot"
 version = "2.0.7"
 description = "Proximity voice chat that works with Simple Voice Chat servers: 3D audio, push to talk, whisper, voice groups. An independent project, not affiliated with Simple Voice Chat."
-authors = ["selfmonoraque5"]
+authors = ["selfmonoraque5", "arismoko"]
 license = "MIT AND BSD-3-Clause"
 license_url = "https://github.com/selfmonoraque5/earshot/blob/main/LICENSE"
 credits = "An independent project, not affiliated with Simple Voice Chat. Opus by opus-rs (BSD-3-Clause)."
@@ -14,8 +14,7 @@ capabilities = ["registries"]
 
 [native]
 game = "26.3"
-horizon = "f037744a79f9982c47876f49c5a3067279f88706"
-mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+sunrise = "7cfdf81463ebb4a19705768273909f7f3f03601d"
 
 # No game patch in this version: the voice server's patch broke with Horizon's gameplay split
 # (horizon-rust/horizon#18462, since fixed in the launcher). Joining servers needs none; hosting
