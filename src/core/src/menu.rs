@@ -7,6 +7,7 @@
 //! The game glue only paints and forwards input, so layout and behaviour are unit-tested here.
 //! The look and wording are Earshot's own.
 
+use crate::options::{Opt, OptKind, Options};
 use crate::plugin::GroupType;
 use crate::ui::{Draw, lock_icon};
 use crate::wire::Uuid;
@@ -36,8 +37,14 @@ pub enum MenuAction {
     SetPlayerVolume(Uuid, f32),
     /// Join a group, with its password if it has one.
     JoinGroup(Uuid, Option<String>),
-    CreateGroup { name: String, password: Option<String>, kind: GroupType },
+    CreateGroup {
+        name: String,
+        password: Option<String>,
+        kind: GroupType,
+    },
     LeaveGroup,
+    /// An option's slider moved, or its toggle or choice clicked (the number is ignored then).
+    Set(Opt, f32),
 }
 
 /// Keys the menu handles itself while a text box has focus.
@@ -76,6 +83,9 @@ pub struct MenuModel {
     pub speakers: String,
     /// Nearby players: id, name, volume, talking now.
     pub players: Vec<(Uuid, String, f32, bool)>,
+    /// Players with a saved volume who aren't here, when those may be adjusted: id, name, volume.
+    pub offline: Vec<(Uuid, String, f32)>,
+    pub options: Options,
     /// The group we're in, by name.
     pub group: Option<String>,
     /// Its members: id, name, talking now.
@@ -91,6 +101,12 @@ pub struct MenuModel {
 pub enum Page {
     Main,
     Settings,
+    /// Delays, buffering, 3D audio and what happens on joining.
+    Advanced,
+    /// Which icons show, and their size and layout.
+    Display,
+    /// Where the icons are.
+    Positions,
     Players,
     /// The group list, or our group's members when we're in one.
     Groups,
@@ -103,7 +119,13 @@ impl Page {
     /// Where Back goes.
     fn parent(self) -> Page {
         match self {
-            Page::Main | Page::Settings | Page::Players | Page::Groups => Page::Main,
+            Page::Main
+            | Page::Settings
+            | Page::Advanced
+            | Page::Display
+            | Page::Players
+            | Page::Groups => Page::Main,
+            Page::Positions => Page::Display,
             Page::CreateGroup | Page::Password(_) => Page::Groups,
         }
     }
@@ -165,10 +187,18 @@ struct Editing {
 enum Kind {
     Button,
     /// A slider from `min` to `max` showing `value`.
-    Slider { min: f32, max: f32, value: f32 },
+    Slider {
+        min: f32,
+        max: f32,
+        value: f32,
+    },
     /// A text box: the widget's label is its text, shown as `placeholder` when empty, as
     /// asterisks when `secret`, with a caret when focused.
-    Field { field: Field, placeholder: &'static str, secret: bool },
+    Field {
+        field: Field,
+        placeholder: &'static str,
+        secret: bool,
+    },
     /// A line that shows something and can't be clicked (a group member).
     Label,
 }
@@ -191,6 +221,7 @@ enum Id {
     GroupSounds,
     Microphone,
     Speakers,
+    Opt(Opt),
     Player(Uuid),
     Group(Uuid),
     Member(Uuid),
@@ -220,7 +251,16 @@ struct Widget {
 
 impl Widget {
     fn new(id: Id, kind: Kind, label: impl Into<String>) -> Self {
-        Self { id, rect: [0.0; 4], kind, label: label.into(), on: false, alert: false, lock: false, avatar: None }
+        Self {
+            id,
+            rect: [0.0; 4],
+            kind,
+            label: label.into(),
+            on: false,
+            alert: false,
+            lock: false,
+            avatar: None,
+        }
     }
 
     fn on(mut self, on: bool) -> Self {
@@ -298,7 +338,11 @@ pub struct Menu {
 
 impl Default for Menu {
     fn default() -> Self {
-        Self { page: Page::Main, dragging: None, edit: Editing::default() }
+        Self {
+            page: Page::Main,
+            dragging: None,
+            edit: Editing::default(),
+        }
     }
 }
 
@@ -309,7 +353,12 @@ impl Menu {
 
     /// The menu was opened: start on the main screen, nothing focused.
     pub fn open(&mut self) {
-        self.page = Page::Main;
+        self.open_at(Page::Main);
+    }
+
+    /// The menu was opened on `page` (a key that goes straight to settings or groups).
+    pub fn open_at(&mut self, page: Page) {
+        self.page = page;
         self.dragging = None;
         self.edit.focus = None;
     }
@@ -324,19 +373,76 @@ impl Menu {
         }
     }
 
+    /// The button or slider for option `opt`.
+    fn option_widget(opt: Opt, o: &Options) -> Widget {
+        let name = opt_name(opt);
+        match opt.kind() {
+            OptKind::Toggle => {
+                let on = o.on(opt);
+                Widget::new(
+                    Id::Opt(opt),
+                    Kind::Button,
+                    format!("{name}: {}", if on { "on" } else { "off" }),
+                )
+                .on(on)
+            }
+            OptKind::Choice => Widget::new(
+                Id::Opt(opt),
+                Kind::Button,
+                format!("{name}: {}", o.choice(opt)),
+            ),
+            OptKind::Int { .. } => {
+                let (min, max) = opt.slider();
+                let value = o.number(opt).clamp(min, max);
+                Widget::new(
+                    Id::Opt(opt),
+                    Kind::Slider { min, max, value },
+                    format!("{name}: {}", o.number(opt) as i32),
+                )
+            }
+            OptKind::Scale { .. } => {
+                let (min, max) = opt.slider();
+                let value = o.number(opt).clamp(min, max);
+                Widget::new(
+                    Id::Opt(opt),
+                    Kind::Slider { min, max, value },
+                    format!("{name}: {:.2}", o.number(opt)),
+                )
+            }
+        }
+    }
+
     fn layout(&self, m: &MenuModel, gui: [f32; 2]) -> Layout {
         let w = PANEL_W.min(gui[0] - 8.0);
         let x0 = ((gui[0] - w) / 2.0).floor();
-        let mut b = Builder { x: x0 + PAD, w: w - 2.0 * PAD, y: TITLE_H + PAD, widgets: Vec::new(), texts: Vec::new() };
+        let mut b = Builder {
+            x: x0 + PAD,
+            w: w - 2.0 * PAD,
+            y: TITLE_H + PAD,
+            widgets: Vec::new(),
+            texts: Vec::new(),
+        };
         let page = self.page(m);
         let title = match page {
             Page::Main => "Earshot".to_string(),
             Page::Settings => "Settings".to_string(),
+            Page::Advanced => "Advanced".to_string(),
+            Page::Display => "Icons".to_string(),
+            Page::Positions => "Icon positions".to_string(),
             Page::Players => "Players nearby".to_string(),
-            Page::Groups => m.group.clone().map(|g| format!("Group: {g}")).unwrap_or_else(|| "Groups".to_string()),
+            Page::Groups => m
+                .group
+                .clone()
+                .map(|g| format!("Group: {g}"))
+                .unwrap_or_else(|| "Groups".to_string()),
             Page::CreateGroup => "Create group".to_string(),
             Page::Password(id) => {
-                let name = m.groups.iter().find(|g| g.0 == id).map(|g| g.1.as_str()).unwrap_or("group");
+                let name = m
+                    .groups
+                    .iter()
+                    .find(|g| g.0 == id)
+                    .map(|g| g.1.as_str())
+                    .unwrap_or("group");
                 format!("Join {name}")
             }
         };
@@ -344,37 +450,82 @@ impl Menu {
         match page {
             Page::Main => {
                 b.text(&m.status, if m.connected { GREEN_TEXT } else { 0xFFAA55 });
-                b.row(vec![Widget::new(Id::Go(Page::Settings), Kind::Button, "Settings")]);
+                b.row(vec![
+                    Widget::new(Id::Go(Page::Settings), Kind::Button, "Settings"),
+                    Widget::new(Id::Go(Page::Advanced), Kind::Button, "Advanced"),
+                    Widget::new(Id::Go(Page::Display), Kind::Button, "Icons"),
+                ]);
                 let groups = match &m.group {
                     Some(g) => format!("Group: {g}"),
                     None => "Groups".to_string(),
                 };
-                b.row(vec![Widget::new(Id::Go(Page::Groups), Kind::Button, groups).on(m.group.is_some())]);
-                b.row(vec![Widget::new(Id::Go(Page::Players), Kind::Button, format!("Players ({})", m.players.len()))]);
+                b.row(vec![
+                    Widget::new(Id::Go(Page::Groups), Kind::Button, groups).on(m.group.is_some()),
+                ]);
+                b.row(vec![Widget::new(
+                    Id::Go(Page::Players),
+                    Kind::Button,
+                    format!("Players ({})", m.players.len()),
+                )]);
                 b.space(4.0);
                 b.row(vec![
-                    Widget::new(Id::Mute, Kind::Button, if m.muted { "Muted" } else { "Mic on" }).alert(m.muted),
-                    Widget::new(Id::Deafen, Kind::Button, if m.deafened { "Deafened" } else { "Sound on" }).alert(m.deafened),
-                    Widget::new(Id::VoiceChat, Kind::Button, if m.disabled { "Voice off" } else { "Voice on" }).alert(m.disabled),
+                    Widget::new(
+                        Id::Mute,
+                        Kind::Button,
+                        if m.muted { "Muted" } else { "Mic on" },
+                    )
+                    .alert(m.muted),
+                    Widget::new(
+                        Id::Deafen,
+                        Kind::Button,
+                        if m.deafened { "Deafened" } else { "Sound on" },
+                    )
+                    .alert(m.deafened),
+                    Widget::new(
+                        Id::VoiceChat,
+                        Kind::Button,
+                        if m.disabled { "Voice off" } else { "Voice on" },
+                    )
+                    .alert(m.disabled),
                 ]);
             }
             Page::Settings => {
                 b.row(vec![Widget::new(
                     Id::VoiceVolume,
-                    Kind::Slider { min: 0.0, max: VOLUME_MAX, value: m.voice_volume },
+                    Kind::Slider {
+                        min: 0.0,
+                        max: VOLUME_MAX,
+                        value: m.voice_volume,
+                    },
                     format!("Voice volume: {}", pct(m.voice_volume)),
                 )]);
                 b.row(vec![Widget::new(
                     Id::MicVolume,
-                    Kind::Slider { min: 0.0, max: VOLUME_MAX, value: m.mic_volume },
+                    Kind::Slider {
+                        min: 0.0,
+                        max: VOLUME_MAX,
+                        value: m.mic_volume,
+                    },
                     format!("Mic volume: {}", pct(m.mic_volume)),
                 )]);
-                let mode = if m.push_to_talk { format!("Push to talk ({})", m.ptt_key) } else { "Voice activation".to_string() };
+                let mode = if m.push_to_talk {
+                    format!("Push to talk ({})", m.ptt_key)
+                } else {
+                    "Voice activation".to_string()
+                };
                 b.row(vec![Widget::new(Id::Mode, Kind::Button, mode)]);
                 // Beside each other: how the key works (push to talk only) and the mic test.
                 let mut row = Vec::new();
                 if m.push_to_talk {
-                    row.push(Widget::new(Id::PttStyle, Kind::Button, if m.ptt_toggle { "Press to switch" } else { "Hold to talk" }));
+                    row.push(Widget::new(
+                        Id::PttStyle,
+                        Kind::Button,
+                        if m.ptt_toggle {
+                            "Press to switch"
+                        } else {
+                            "Hold to talk"
+                        },
+                    ));
                 }
                 // Short enough for the half-width button.
                 let mic_test = if m.disabled {
@@ -386,52 +537,183 @@ impl Menu {
                 } else {
                     "Mic test"
                 };
-                row.push(Widget::new(Id::MicTest, Kind::Button, mic_test).on(m.mic_test && !m.muted && !m.disabled));
+                row.push(
+                    Widget::new(Id::MicTest, Kind::Button, mic_test)
+                        .on(m.mic_test && !m.muted && !m.disabled),
+                );
                 b.row(row);
                 let meter = if m.push_to_talk {
                     format!("Mic level {:.0} dB", m.level_db)
                 } else {
-                    format!("Threshold {:.0} dB (level {:.0})", m.threshold_db, m.level_db)
+                    format!(
+                        "Threshold {:.0} dB (level {:.0})",
+                        m.threshold_db, m.level_db
+                    )
                 };
-                b.row(vec![Widget::new(Id::Threshold, Kind::Slider { min: DB_MIN, max: DB_MAX, value: m.threshold_db }, meter)]);
                 b.row(vec![Widget::new(
-                    Id::Noise,
+                    Id::Threshold,
+                    Kind::Slider {
+                        min: DB_MIN,
+                        max: DB_MAX,
+                        value: m.threshold_db,
+                    },
+                    meter,
+                )]);
+                b.row(vec![
+                    Widget::new(
+                        Id::Noise,
+                        Kind::Button,
+                        format!(
+                            "Noise reduction: {}",
+                            if m.noise_suppression { "on" } else { "off" }
+                        ),
+                    )
+                    .on(m.noise_suppression),
+                ]);
+                b.row(vec![Widget::new(
+                    Id::Microphone,
                     Kind::Button,
-                    format!("Noise reduction: {}", if m.noise_suppression { "on" } else { "off" }),
-                )
-                .on(m.noise_suppression)]);
-                b.row(vec![Widget::new(Id::Microphone, Kind::Button, format!("Input: {}", m.microphone))]);
-                b.row(vec![Widget::new(Id::Speakers, Kind::Button, format!("Output: {}", m.speakers))]);
+                    format!("Input: {}", m.microphone),
+                )]);
+                b.row(vec![Widget::new(
+                    Id::Speakers,
+                    Kind::Button,
+                    format!("Output: {}", m.speakers),
+                )]);
+            }
+            Page::Advanced => {
+                let o = &m.options;
+                b.row(vec![
+                    Self::option_widget(Opt::AudioType, o),
+                    Self::option_widget(Opt::MuteOnJoin, o),
+                ]);
+                for opt in [
+                    Opt::VoiceDeactivationDelay,
+                    Opt::PttDeactivationDelay,
+                    Opt::OutputBufferSize,
+                    Opt::AudioPacketThreshold,
+                ] {
+                    b.row(vec![Self::option_widget(opt, o)]);
+                }
+                b.row(vec![Self::option_widget(
+                    Opt::OfflinePlayerVolumeAdjustment,
+                    o,
+                )]);
+                b.row(vec![Self::option_widget(
+                    Opt::ShowFakePlayersDisconnected,
+                    o,
+                )]);
+            }
+            Page::Display => {
+                let o = &m.options;
+                b.row(vec![
+                    Self::option_widget(Opt::HideIcons, o),
+                    Self::option_widget(Opt::ShowNametagIcons, o),
+                ]);
+                b.row(vec![
+                    Self::option_widget(Opt::ShowHudIcons, o),
+                    Self::option_widget(Opt::ShowGroupHud, o),
+                ]);
+                b.row(vec![
+                    Self::option_widget(Opt::ShowOwnGroupIcon, o),
+                    Self::option_widget(Opt::GroupPlayerIconOrientation, o),
+                ]);
+                b.row(vec![Self::option_widget(Opt::HudIconScale, o)]);
+                b.row(vec![Self::option_widget(Opt::GroupHudIconScale, o)]);
+                b.row(vec![Widget::new(
+                    Id::Go(Page::Positions),
+                    Kind::Button,
+                    "Positions",
+                )]);
+            }
+            Page::Positions => {
+                b.text("Negative: counted from the right or bottom", GREY);
+                for opt in [
+                    Opt::HudIconPosX,
+                    Opt::HudIconPosY,
+                    Opt::GroupPlayerIconPosX,
+                    Opt::GroupPlayerIconPosY,
+                ] {
+                    b.row(vec![Self::option_widget(opt, &m.options)]);
+                }
             }
             Page::Players => {
-                if m.players.is_empty() {
+                if m.players.is_empty() && m.offline.is_empty() {
                     b.text("No players nearby", GREY);
                 }
-                let room = list_room(gui[1], 1);
+                let room = list_room(gui[1], if m.offline.is_empty() { 1 } else { 2 });
                 for (id, name, volume, talking) in m.players.iter().take(room) {
-                    let label = format!("{}{name}: {}", if *talking { "> " } else { "" }, pct(*volume));
-                    b.row(vec![Widget::new(Id::Player(*id), Kind::Slider { min: 0.0, max: VOLUME_MAX, value: *volume }, label)]);
+                    let label = format!(
+                        "{}{name}: {}",
+                        if *talking { "> " } else { "" },
+                        pct(*volume)
+                    );
+                    b.row(vec![Widget::new(
+                        Id::Player(*id),
+                        Kind::Slider {
+                            min: 0.0,
+                            max: VOLUME_MAX,
+                            value: *volume,
+                        },
+                        label,
+                    )]);
                 }
                 if m.players.len() > room {
                     b.text(format!("and {} more", m.players.len() - room), GREY);
+                }
+                let left = room.saturating_sub(m.players.len());
+                if !m.offline.is_empty() {
+                    b.text("Offline", GREY);
+                    for (id, name, volume) in m.offline.iter().take(left) {
+                        let label = format!("{name} (offline): {}", pct(*volume));
+                        b.row(vec![Widget::new(
+                            Id::Player(*id),
+                            Kind::Slider {
+                                min: 0.0,
+                                max: VOLUME_MAX,
+                                value: *volume,
+                            },
+                            label,
+                        )]);
+                    }
+                    if m.offline.len() > left {
+                        b.text(format!("and {} more", m.offline.len() - left), GREY);
+                    }
                 }
             }
             Page::Groups if m.group.is_some() => {
                 b.row(vec![Widget::new(
                     Id::GroupVolume,
-                    Kind::Slider { min: 0.0, max: VOLUME_MAX, value: m.group_volume },
+                    Kind::Slider {
+                        min: 0.0,
+                        max: VOLUME_MAX,
+                        value: m.group_volume,
+                    },
                     format!("Group volume: {}", pct(m.group_volume)),
                 )]);
-                b.row(vec![Widget::new(
-                    Id::GroupSounds,
-                    Kind::Button,
-                    format!("Join and leave sounds: {}", if m.group_sounds { "on" } else { "off" }),
-                )
-                .on(m.group_sounds)]);
+                b.row(vec![
+                    Widget::new(
+                        Id::GroupSounds,
+                        Kind::Button,
+                        format!(
+                            "Join and leave sounds: {}",
+                            if m.group_sounds { "on" } else { "off" }
+                        ),
+                    )
+                    .on(m.group_sounds),
+                ]);
                 b.text("Members", GREY);
                 let room = list_room(gui[1], 4);
                 for (id, name, talking) in m.group_members.iter().take(room) {
-                    let mut w = Widget::new(Id::Member(*id), Kind::Label, if *talking { format!("{name}  (talking)") } else { name.clone() });
+                    let mut w = Widget::new(
+                        Id::Member(*id),
+                        Kind::Label,
+                        if *talking {
+                            format!("{name}  (talking)")
+                        } else {
+                            name.clone()
+                        },
+                    );
                     w.on = *talking;
                     w.avatar = Some(*id);
                     b.row(vec![w]);
@@ -439,7 +721,9 @@ impl Menu {
                 if m.group_members.len() > room {
                     b.text(format!("and {} more", m.group_members.len() - room), GREY);
                 }
-                b.row(vec![Widget::new(Id::Leave, Kind::Button, "Leave group").alert(true)]);
+                b.row(vec![
+                    Widget::new(Id::Leave, Kind::Button, "Leave group").alert(true),
+                ]);
             }
             Page::Groups => {
                 if let Some(p) = &m.group_problem {
@@ -451,43 +735,73 @@ impl Menu {
                 }
                 let room = list_room(gui[1], 2);
                 for (id, name, has_password, members, _) in others.iter().take(room) {
-                    let mut w = Widget::new(Id::Group(*id), Kind::Button, format!("{name} ({members})"));
+                    let mut w =
+                        Widget::new(Id::Group(*id), Kind::Button, format!("{name} ({members})"));
                     w.lock = *has_password;
                     b.row(vec![w]);
                 }
                 if others.len() > room {
                     b.text(format!("and {} more", others.len() - room), GREY);
                 }
-                b.row(vec![Widget::new(Id::Go(Page::CreateGroup), Kind::Button, "Create group")]);
+                b.row(vec![Widget::new(
+                    Id::Go(Page::CreateGroup),
+                    Kind::Button,
+                    "Create group",
+                )]);
             }
             Page::CreateGroup => {
                 b.text("Group name", GREY);
                 b.row(vec![Widget::new(
                     Id::Input(Field::NewName),
-                    Kind::Field { field: Field::NewName, placeholder: "", secret: false },
+                    Kind::Field {
+                        field: Field::NewName,
+                        placeholder: "",
+                        secret: false,
+                    },
                     self.edit.name.clone(),
                 )]);
                 b.text("Password (optional)", GREY);
                 b.row(vec![Widget::new(
                     Id::Input(Field::NewPassword),
-                    Kind::Field { field: Field::NewPassword, placeholder: "", secret: true },
+                    Kind::Field {
+                        field: Field::NewPassword,
+                        placeholder: "",
+                        secret: true,
+                    },
                     self.edit.password.clone(),
                 )]);
-                b.row(vec![Widget::new(Id::Kind, Kind::Button, format!("Type: {}", self.edit.kind.label()))]);
+                b.row(vec![Widget::new(
+                    Id::Kind,
+                    Kind::Button,
+                    format!("Type: {}", self.edit.kind.label()),
+                )]);
                 b.text(kind_hint(self.edit.kind), GREY);
-                b.row(vec![Widget::new(Id::Create, Kind::Button, "Create").on(!self.edit.name.trim().is_empty())]);
+                b.row(vec![
+                    Widget::new(Id::Create, Kind::Button, "Create").on(!self
+                        .edit
+                        .name
+                        .trim()
+                        .is_empty()),
+                ]);
             }
             Page::Password(_) => {
                 b.text("Password", GREY);
                 b.row(vec![Widget::new(
                     Id::Input(Field::JoinPassword),
-                    Kind::Field { field: Field::JoinPassword, placeholder: "", secret: true },
+                    Kind::Field {
+                        field: Field::JoinPassword,
+                        placeholder: "",
+                        secret: true,
+                    },
                     self.edit.join_password.clone(),
                 )]);
                 if let Some(p) = &m.group_problem {
                     b.text(format!("Couldn't join: {p}"), RED_TEXT);
                 }
-                b.row(vec![Widget::new(Id::Join, Kind::Button, "Join").on(!self.edit.join_password.is_empty())]);
+                b.row(vec![
+                    Widget::new(Id::Join, Kind::Button, "Join")
+                        .on(!self.edit.join_password.is_empty()),
+                ]);
             }
         }
         if page != Page::Main {
@@ -504,47 +818,92 @@ impl Menu {
         for t in &mut b.texts {
             t.1[1] += y0;
         }
-        Layout { panel: [x0, y0, w, h], title, widgets: b.widgets, texts: b.texts }
+        Layout {
+            panel: [x0, y0, w, h],
+            title,
+            widgets: b.widgets,
+            texts: b.texts,
+        }
     }
 
     /// Everything to paint this frame. `text_width` measures a string in GUI pixels.
-    pub fn draw(&self, m: &MenuModel, gui: [f32; 2], mouse: [f32; 2], text_width: &dyn Fn(&str) -> f32) -> Vec<Draw> {
+    pub fn draw(
+        &self,
+        m: &MenuModel,
+        gui: [f32; 2],
+        mouse: [f32; 2],
+        text_width: &dyn Fn(&str) -> f32,
+    ) -> Vec<Draw> {
         let l = self.layout(m, gui);
         let p = l.panel;
         let mut out = vec![
             Draw::Fill { rect: p, argb: BG },
-            Draw::Fill { rect: [p[0], p[1], p[2], TITLE_H], argb: TITLE_BG },
+            Draw::Fill {
+                rect: [p[0], p[1], p[2], TITLE_H],
+                argb: TITLE_BG,
+            },
             Draw::Label {
                 text: l.title.clone(),
-                at: [p[0] + ((p[2] - text_width(&l.title)) / 2.0).max(4.0), p[1] + (TITLE_H - TEXT_H) / 2.0],
+                at: [
+                    p[0] + ((p[2] - text_width(&l.title)) / 2.0).max(4.0),
+                    p[1] + (TITLE_H - TEXT_H) / 2.0,
+                ],
                 rgb: TITLE,
             },
         ];
         for (text, at, rgb) in &l.texts {
-            out.push(Draw::Label { text: fit(text, p[2] - 2.0 * PAD, text_width), at: *at, rgb: *rgb });
+            out.push(Draw::Label {
+                text: fit(text, p[2] - 2.0 * PAD, text_width),
+                at: *at,
+                rgb: *rgb,
+            });
         }
         for w in &l.widgets {
             let hover = inside(w.rect, mouse) || self.dragging.as_ref() == Some(&w.id);
             match w.kind {
-                Kind::Field { field, placeholder, secret } => {
+                Kind::Field {
+                    field,
+                    placeholder,
+                    secret,
+                } => {
                     let focused = self.edit.focus == Some(field);
-                    out.push(Draw::Fill { rect: w.rect, argb: if focused { 0xFF70_7088 } else { 0xFF3A_3A44 } });
                     out.push(Draw::Fill {
-                        rect: [w.rect[0] + 1.0, w.rect[1] + 1.0, w.rect[2] - 2.0, w.rect[3] - 2.0],
+                        rect: w.rect,
+                        argb: if focused { 0xFF70_7088 } else { 0xFF3A_3A44 },
+                    });
+                    out.push(Draw::Fill {
+                        rect: [
+                            w.rect[0] + 1.0,
+                            w.rect[1] + 1.0,
+                            w.rect[2] - 2.0,
+                            w.rect[3] - 2.0,
+                        ],
                         argb: 0xFF0E_0E12,
                     });
                     push_field_text(&mut out, w, placeholder, secret, focused, text_width);
                     continue;
                 }
                 Kind::Label => {
-                    out.push(Draw::Fill { rect: w.rect, argb: if w.on { 0xFF24_4A30 } else { 0xFF22_222A } });
+                    out.push(Draw::Fill {
+                        rect: w.rect,
+                        argb: if w.on { 0xFF24_4A30 } else { 0xFF22_222A },
+                    });
                     let mut text_x = w.rect[0] + 5.0;
                     if let Some(id) = w.avatar {
-                        out.extend(avatar(id, &w.label, [w.rect[0] + 3.0, w.rect[1] + 3.0], text_width));
+                        out.extend(avatar(
+                            id,
+                            &w.label,
+                            [w.rect[0] + 3.0, w.rect[1] + 3.0],
+                            text_width,
+                        ));
                         text_x = w.rect[0] + 3.0 + 12.0 + 5.0;
                     }
                     let text = fit(&w.label, w.rect[0] + w.rect[2] - text_x - 4.0, text_width);
-                    out.push(Draw::Label { text, at: [text_x, w.rect[1] + (ROW_H - TEXT_H) / 2.0], rgb: if w.on { GREEN_TEXT } else { WHITE } });
+                    out.push(Draw::Label {
+                        text,
+                        at: [text_x, w.rect[1] + (ROW_H - TEXT_H) / 2.0],
+                        rgb: if w.on { GREEN_TEXT } else { WHITE },
+                    });
                     continue;
                 }
                 Kind::Button => {
@@ -558,26 +917,44 @@ impl Menu {
                     };
                     out.push(Draw::Fill { rect: w.rect, argb });
                     if w.lock {
-                        out.extend(lock_icon([w.rect[0] + w.rect[2] - 12.0, w.rect[1] + (ROW_H - 9.0) / 2.0], 0xFFE0C060));
+                        out.extend(lock_icon(
+                            [
+                                w.rect[0] + w.rect[2] - 12.0,
+                                w.rect[1] + (ROW_H - 9.0) / 2.0,
+                            ],
+                            0xFFE0C060,
+                        ));
                     }
                 }
                 Kind::Slider { min, max, value } => {
-                    out.push(Draw::Fill { rect: w.rect, argb: TRACK });
+                    out.push(Draw::Fill {
+                        rect: w.rect,
+                        argb: TRACK,
+                    });
                     let t = ((value - min) / (max - min)).clamp(0.0, 1.0);
                     if w.id == Id::Threshold {
                         // The live level meter fills the track; the knob is the threshold.
                         let level_t = ((m.level_db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0.0, 1.0);
-                        out.push(Draw::Fill { rect: [w.rect[0], w.rect[1], w.rect[2] * level_t, w.rect[3]], argb: LEVEL });
+                        out.push(Draw::Fill {
+                            rect: [w.rect[0], w.rect[1], w.rect[2] * level_t, w.rect[3]],
+                            argb: LEVEL,
+                        });
                         if m.push_to_talk {
                             // No threshold in push-to-talk: just the meter.
                             push_label(&mut out, w, text_width);
                             continue;
                         }
                     } else {
-                        out.push(Draw::Fill { rect: [w.rect[0], w.rect[1], w.rect[2] * t, w.rect[3]], argb: FILL });
+                        out.push(Draw::Fill {
+                            rect: [w.rect[0], w.rect[1], w.rect[2] * t, w.rect[3]],
+                            argb: FILL,
+                        });
                     }
                     let kx = w.rect[0] + (w.rect[2] - 4.0) * t;
-                    out.push(Draw::Fill { rect: [kx, w.rect[1], 4.0, w.rect[3]], argb: if hover { 0xFFFFFFFF } else { KNOB } });
+                    out.push(Draw::Fill {
+                        rect: [kx, w.rect[1], 4.0, w.rect[3]],
+                        argb: if hover { 0xFFFFFFFF } else { KNOB },
+                    });
                 }
             }
             push_label(&mut out, w, text_width);
@@ -637,11 +1014,21 @@ impl Menu {
                     Some(MenuAction::JoinGroup(g, None))
                 }
             }
+            Id::Opt(opt) if matches!(opt.kind(), OptKind::Toggle | OptKind::Choice) => {
+                Some(MenuAction::Set(opt, 0.0))
+            }
             Id::Threshold if m.push_to_talk => None,
-            Id::Threshold | Id::MicVolume | Id::VoiceVolume | Id::GroupVolume | Id::Player(_) => {
-                let Kind::Slider { min, max, .. } = w.kind else { return None };
+            Id::Threshold
+            | Id::MicVolume
+            | Id::VoiceVolume
+            | Id::GroupVolume
+            | Id::Player(_)
+            | Id::Opt(_) => {
+                let Kind::Slider { min, max, .. } = w.kind else {
+                    return None;
+                };
                 self.dragging = Some(w.id.clone());
-                slider_action(&w.id, slider_value(w.rect, min, max, p[0]))
+                slider_action(&w.id, slider_value(&w.id, w.rect, min, max, p[0]))
             }
             Id::Member(_) | Id::Input(_) => None,
         }
@@ -663,9 +1050,15 @@ impl Menu {
     /// The pointer moved to `p` with the button held.
     pub fn drag(&mut self, m: &MenuModel, gui: [f32; 2], p: [f32; 2]) -> Option<MenuAction> {
         let id = self.dragging.clone()?;
-        let w = self.layout(m, gui).widgets.into_iter().find(|w| w.id == id)?;
-        let Kind::Slider { min, max, .. } = w.kind else { return None };
-        slider_action(&id, slider_value(w.rect, min, max, p[0]))
+        let w = self
+            .layout(m, gui)
+            .widgets
+            .into_iter()
+            .find(|w| w.id == id)?;
+        let Kind::Slider { min, max, .. } = w.kind else {
+            return None;
+        };
+        slider_action(&id, slider_value(&id, w.rect, min, max, p[0]))
     }
 
     /// The button came up. Returns whether a slider was being dragged (only then was the press
@@ -744,7 +1137,11 @@ impl Menu {
         self.edit.name.clear();
         self.edit.password.clear();
         self.go(Page::Groups);
-        Some(MenuAction::CreateGroup { name, password, kind })
+        Some(MenuAction::CreateGroup {
+            name,
+            password,
+            kind,
+        })
     }
 
     /// The Join button, or Enter on the password screen. It stays on that screen, so a wrong
@@ -774,11 +1171,22 @@ fn fit(text: &str, max: f32, text_width: &dyn Fn(&str) -> f32) -> String {
 
 /// A button's or slider's label, centred and shortened to fit.
 fn push_label(out: &mut Vec<Draw>, w: &Widget, text_width: &dyn Fn(&str) -> f32) {
-    let room = if w.lock { w.rect[2] - 24.0 } else { w.rect[2] - 8.0 };
+    let room = if w.lock {
+        w.rect[2] - 24.0
+    } else {
+        w.rect[2] - 8.0
+    };
     let label = fit(&w.label, room, text_width);
     let tw = text_width(&label);
-    let at = [w.rect[0] + (room + 8.0 - tw) / 2.0, w.rect[1] + (w.rect[3] - TEXT_H) / 2.0];
-    out.push(Draw::Label { text: label, at, rgb: WHITE });
+    let at = [
+        w.rect[0] + (room + 8.0 - tw) / 2.0,
+        w.rect[1] + (w.rect[3] - TEXT_H) / 2.0,
+    ];
+    out.push(Draw::Label {
+        text: label,
+        at,
+        rgb: WHITE,
+    });
 }
 
 /// A text box's text: left-aligned, its end kept in view, asterisks for a secret, a caret when
@@ -794,29 +1202,62 @@ fn push_field_text(
     let at = [w.rect[0] + 4.0, w.rect[1] + (w.rect[3] - TEXT_H) / 2.0];
     if w.label.is_empty() && !focused {
         if !placeholder.is_empty() {
-            out.push(Draw::Label { text: placeholder.into(), at, rgb: 0x777777 });
+            out.push(Draw::Label {
+                text: placeholder.into(),
+                at,
+                rgb: 0x777777,
+            });
         }
         return;
     }
-    let shown: String = if secret { "*".repeat(w.label.chars().count()) } else { w.label.clone() };
+    let shown: String = if secret {
+        "*".repeat(w.label.chars().count())
+    } else {
+        w.label.clone()
+    };
     let mut text = if focused { format!("{shown}_") } else { shown };
     let max = w.rect[2] - 8.0;
     while text_width(&text) > max && !text.is_empty() {
         text.remove(0);
     }
-    out.push(Draw::Label { text, at, rgb: WHITE });
+    out.push(Draw::Label {
+        text,
+        at,
+        rgb: WHITE,
+    });
 }
 
 /// A player's coloured square with their initial (group members): 12 x 12 at `at`.
 fn avatar(id: Uuid, name: &str, at: [f32; 2], text_width: &dyn Fn(&str) -> f32) -> Vec<Draw> {
     // A steady colour per player, from their id.
-    let h = id.0.iter().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(*b as u32));
-    let palette = [0xFF3F_7FBF, 0xFFBF_6F3F, 0xFF4F_9F5F, 0xFF9F_4FAF, 0xFFBF_9F3F, 0xFF3F_AFAF, 0xFFAF_4F6F];
-    let initial: String = name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+    let h =
+        id.0.iter()
+            .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(*b as u32));
+    let palette = [
+        0xFF3F_7FBF,
+        0xFFBF_6F3F,
+        0xFF4F_9F5F,
+        0xFF9F_4FAF,
+        0xFFBF_9F3F,
+        0xFF3F_AFAF,
+        0xFFAF_4F6F,
+    ];
+    let initial: String = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
     let tw = text_width(&initial);
     vec![
-        Draw::Fill { rect: [at[0], at[1], 12.0, 12.0], argb: palette[h as usize % palette.len()] },
-        Draw::Label { text: initial, at: [at[0] + (12.0 - tw) / 2.0, at[1] + 2.0], rgb: WHITE },
+        Draw::Fill {
+            rect: [at[0], at[1], 12.0, 12.0],
+            argb: palette[h as usize % palette.len()],
+        },
+        Draw::Label {
+            text: initial,
+            at: [at[0] + (12.0 - tw) / 2.0, at[1] + 2.0],
+            rgb: WHITE,
+        },
     ]
 }
 
@@ -830,12 +1271,50 @@ fn kind_hint(kind: GroupType) -> &'static str {
     }
 }
 
+/// An option's name on its button or slider.
+fn opt_name(opt: Opt) -> &'static str {
+    match opt {
+        Opt::VoiceDeactivationDelay => "Voice delay (frames)",
+        Opt::PttDeactivationDelay => "Push to talk delay (frames)",
+        Opt::OutputBufferSize => "Buffer size (frames)",
+        Opt::AudioPacketThreshold => "Packet threshold",
+        Opt::AudioType => "3D audio",
+        Opt::MuteOnJoin => "Mute on join",
+        Opt::OfflinePlayerVolumeAdjustment => "Offline volumes",
+        Opt::ShowFakePlayersDisconnected => "Fake players offline",
+        Opt::HideIcons => "Hide icons",
+        Opt::ShowNametagIcons => "Name tags",
+        Opt::ShowHudIcons => "HUD icons",
+        Opt::ShowGroupHud => "Group HUD",
+        Opt::ShowOwnGroupIcon => "Own icon",
+        Opt::GroupPlayerIconOrientation => "Layout",
+        Opt::HudIconScale => "HUD icon scale",
+        Opt::GroupHudIconScale => "Group HUD scale",
+        Opt::HudIconPosX => "HUD icons X",
+        Opt::HudIconPosY => "HUD icons Y",
+        Opt::GroupPlayerIconPosX => "Group HUD X",
+        Opt::GroupPlayerIconPosY => "Group HUD Y",
+    }
+}
+
 /// Where along a slider `x` falls, as a value.
-fn slider_value(rect: [f32; 4], min: f32, max: f32, x: f32) -> f32 {
+fn slider_value(id: &Id, rect: [f32; 4], min: f32, max: f32, x: f32) -> f32 {
     let t = ((x - rect[0]) / rect[2]).clamp(0.0, 1.0);
     let v = min + (max - min) * t;
+    // Option scales move in hundredths of five.
+    if let Id::Opt(opt) = id {
+        return if matches!(opt.kind(), OptKind::Scale { .. }) {
+            (v * 20.0).round() / 20.0
+        } else {
+            v.round()
+        };
+    }
     // Snap volumes to 5 % and decibels to 1 dB, so values read cleanly.
-    if max - min <= VOLUME_MAX + 0.001 { (v * 20.0).round() / 20.0 } else { v.round() }
+    if max - min <= VOLUME_MAX + 0.001 {
+        (v * 20.0).round() / 20.0
+    } else {
+        v.round()
+    }
 }
 
 fn slider_action(id: &Id, v: f32) -> Option<MenuAction> {
@@ -845,6 +1324,7 @@ fn slider_action(id: &Id, v: f32) -> Option<MenuAction> {
         Id::VoiceVolume => MenuAction::SetVoiceVolume(v),
         Id::GroupVolume => MenuAction::SetGroupVolume(v),
         Id::Player(u) => MenuAction::SetPlayerVolume(*u, v),
+        Id::Opt(opt) => MenuAction::Set(*opt, v),
         _ => return None,
     })
 }
@@ -871,8 +1351,14 @@ mod tests {
             voice_volume: 1.0,
             microphone: "system default".into(),
             speakers: "system default".into(),
-            players: vec![(Uuid([1; 16]), "Alice".into(), 1.0, true), (Uuid([2; 16]), "Bob".into(), 0.5, false)],
-            groups: vec![(Uuid([8; 16]), "Open".into(), false, 1, false), (Uuid([9; 16]), "Secret".into(), true, 3, false)],
+            players: vec![
+                (Uuid([1; 16]), "Alice".into(), 1.0, true),
+                (Uuid([2; 16]), "Bob".into(), 0.5, false),
+            ],
+            groups: vec![
+                (Uuid([8; 16]), "Open".into(), false, 1, false),
+                (Uuid([9; 16]), "Secret".into(), true, 3, false),
+            ],
             ..MenuModel::default()
         }
     }
@@ -881,13 +1367,21 @@ mod tests {
         let mut m = model();
         m.group = Some("Open".into());
         m.groups[0].4 = true;
-        m.group_members = vec![(Uuid([1; 16]), "Alice".into(), true), (Uuid([3; 16]), "Carol".into(), false)];
+        m.group_members = vec![
+            (Uuid([1; 16]), "Alice".into(), true),
+            (Uuid([3; 16]), "Carol".into(), false),
+        ];
         m
     }
 
     /// The centre of the widget with this id on the current screen.
     fn at(menu: &Menu, m: &MenuModel, id: &Id) -> [f32; 2] {
-        let w = menu.layout(m, GUI).widgets.into_iter().find(|w| &w.id == id).unwrap_or_else(|| panic!("no {id:?} on {:?}", menu.page(m)));
+        let w = menu
+            .layout(m, GUI)
+            .widgets
+            .into_iter()
+            .find(|w| &w.id == id)
+            .unwrap_or_else(|| panic!("no {id:?} on {:?}", menu.page(m)));
         [w.rect[0] + w.rect[2] / 2.0, w.rect[1] + w.rect[3] / 2.0]
     }
 
@@ -897,7 +1391,15 @@ mod tests {
     }
 
     fn texts(d: &[Draw]) -> Vec<String> {
-        d.iter().filter_map(|x| if let Draw::Label { text, .. } = x { Some(text.clone()) } else { None }).collect()
+        d.iter()
+            .filter_map(|x| {
+                if let Draw::Label { text, .. } = x {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -905,7 +1407,11 @@ mod tests {
         let m = model();
         let mut menu = Menu::new();
         assert_eq!(menu.page(&m), Page::Main);
-        for (target, title) in [(Page::Settings, "Settings"), (Page::Players, "Players nearby"), (Page::Groups, "Groups")] {
+        for (target, title) in [
+            (Page::Settings, "Settings"),
+            (Page::Players, "Players nearby"),
+            (Page::Groups, "Groups"),
+        ] {
             assert_eq!(click(&mut menu, &m, Id::Go(target)), None);
             assert_eq!(menu.page(&m), target);
             assert!(texts(&menu.draw(&m, GUI, [0.0; 2], &width)).contains(&title.to_string()));
@@ -913,7 +1419,12 @@ mod tests {
             assert_eq!(menu.page(&m), Page::Main);
         }
         // The main screen has no Back; reopening starts on it.
-        assert!(menu.layout(&m, GUI).widgets.iter().all(|w| w.id != Id::Back));
+        assert!(
+            menu.layout(&m, GUI)
+                .widgets
+                .iter()
+                .all(|w| w.id != Id::Back)
+        );
         click(&mut menu, &m, Id::Go(Page::Settings));
         menu.open();
         assert_eq!(menu.page(&m), Page::Main);
@@ -924,8 +1435,14 @@ mod tests {
         let mut m = model();
         let mut menu = Menu::new();
         assert_eq!(click(&mut menu, &m, Id::Mute), Some(MenuAction::ToggleMute));
-        assert_eq!(click(&mut menu, &m, Id::Deafen), Some(MenuAction::ToggleDeafen));
-        assert_eq!(click(&mut menu, &m, Id::VoiceChat), Some(MenuAction::ToggleVoiceChat));
+        assert_eq!(
+            click(&mut menu, &m, Id::Deafen),
+            Some(MenuAction::ToggleDeafen)
+        );
+        assert_eq!(
+            click(&mut menu, &m, Id::VoiceChat),
+            Some(MenuAction::ToggleVoiceChat)
+        );
         m.muted = true;
         let d = menu.draw(&m, GUI, [0.0; 2], &width);
         assert!(texts(&d).contains(&"Muted".to_string()));
@@ -937,19 +1454,41 @@ mod tests {
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Settings));
         assert_eq!(click(&mut menu, &m, Id::Mode), Some(MenuAction::ToggleMode));
-        assert_eq!(click(&mut menu, &m, Id::Noise), Some(MenuAction::ToggleNoiseSuppression));
-        assert_eq!(click(&mut menu, &m, Id::Microphone), Some(MenuAction::NextMicrophone));
-        assert_eq!(click(&mut menu, &m, Id::Speakers), Some(MenuAction::NextSpeakers));
+        assert_eq!(
+            click(&mut menu, &m, Id::Noise),
+            Some(MenuAction::ToggleNoiseSuppression)
+        );
+        assert_eq!(
+            click(&mut menu, &m, Id::Microphone),
+            Some(MenuAction::NextMicrophone)
+        );
+        assert_eq!(
+            click(&mut menu, &m, Id::Speakers),
+            Some(MenuAction::NextSpeakers)
+        );
         // The middle of a 0-200 % slider is 100 %; dragging past the end clamps.
-        assert_eq!(click(&mut menu, &m, Id::MicVolume), Some(MenuAction::SetMicVolume(1.0)));
-        assert_eq!(menu.drag(&m, GUI, [9999.0, 0.0]), Some(MenuAction::SetMicVolume(2.0)));
+        assert_eq!(
+            click(&mut menu, &m, Id::MicVolume),
+            Some(MenuAction::SetMicVolume(1.0))
+        );
+        assert_eq!(
+            menu.drag(&m, GUI, [9999.0, 0.0]),
+            Some(MenuAction::SetMicVolume(2.0))
+        );
         assert!(menu.release());
         assert!(!menu.release());
-        assert_eq!(click(&mut menu, &m, Id::Threshold), Some(MenuAction::SetThreshold(-30.0)));
+        assert_eq!(
+            click(&mut menu, &m, Id::Threshold),
+            Some(MenuAction::SetThreshold(-30.0))
+        );
         menu.release();
         let mut ptt = m.clone();
         ptt.push_to_talk = true;
-        assert_eq!(click(&mut menu, &ptt, Id::Threshold), None, "no threshold in push to talk");
+        assert_eq!(
+            click(&mut menu, &ptt, Id::Threshold),
+            None,
+            "no threshold in push to talk"
+        );
     }
 
     #[test]
@@ -957,16 +1496,33 @@ mod tests {
         let mut m = model();
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Settings));
-        assert!(menu.layout(&m, GUI).widgets.iter().all(|w| w.id != Id::PttStyle), "no key style in voice activation");
-        assert_eq!(click(&mut menu, &m, Id::MicTest), Some(MenuAction::ToggleMicTest));
+        assert!(
+            menu.layout(&m, GUI)
+                .widgets
+                .iter()
+                .all(|w| w.id != Id::PttStyle),
+            "no key style in voice activation"
+        );
+        assert_eq!(
+            click(&mut menu, &m, Id::MicTest),
+            Some(MenuAction::ToggleMicTest)
+        );
         m.push_to_talk = true;
-        assert_eq!(click(&mut menu, &m, Id::PttStyle), Some(MenuAction::TogglePttStyle));
+        assert_eq!(
+            click(&mut menu, &m, Id::PttStyle),
+            Some(MenuAction::TogglePttStyle)
+        );
         let shown = texts(&menu.draw(&m, GUI, [0.0; 2], &width));
-        assert!(shown.contains(&"Hold to talk".to_string()) && shown.contains(&"Mic test".to_string()));
+        assert!(
+            shown.contains(&"Hold to talk".to_string()) && shown.contains(&"Mic test".to_string())
+        );
         m.ptt_toggle = true;
         m.mic_test = true;
         let shown = texts(&menu.draw(&m, GUI, [0.0; 2], &width));
-        assert!(shown.contains(&"Press to switch".to_string()) && shown.contains(&"Mic test: on".to_string()));
+        assert!(
+            shown.contains(&"Press to switch".to_string())
+                && shown.contains(&"Mic test: on".to_string())
+        );
     }
 
     #[test]
@@ -976,16 +1532,33 @@ mod tests {
         m.group_sounds = true;
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Groups));
-        assert_eq!(click(&mut menu, &m, Id::GroupVolume), Some(MenuAction::SetGroupVolume(1.0)));
-        assert_eq!(menu.drag(&m, GUI, [-9999.0, 0.0]), Some(MenuAction::SetGroupVolume(0.0)));
+        assert_eq!(
+            click(&mut menu, &m, Id::GroupVolume),
+            Some(MenuAction::SetGroupVolume(1.0))
+        );
+        assert_eq!(
+            menu.drag(&m, GUI, [-9999.0, 0.0]),
+            Some(MenuAction::SetGroupVolume(0.0))
+        );
         menu.release();
-        assert_eq!(click(&mut menu, &m, Id::GroupSounds), Some(MenuAction::ToggleGroupSounds));
-        assert!(texts(&menu.draw(&m, GUI, [0.0; 2], &width)).contains(&"Join and leave sounds: on".to_string()));
+        assert_eq!(
+            click(&mut menu, &m, Id::GroupSounds),
+            Some(MenuAction::ToggleGroupSounds)
+        );
+        assert!(
+            texts(&menu.draw(&m, GUI, [0.0; 2], &width))
+                .contains(&"Join and leave sounds: on".to_string())
+        );
         // Not in a group: the group list has neither.
         let mut menu = Menu::new();
         let out = model();
         click(&mut menu, &out, Id::Go(Page::Groups));
-        assert!(menu.layout(&out, GUI).widgets.iter().all(|w| w.id != Id::GroupVolume && w.id != Id::GroupSounds));
+        assert!(
+            menu.layout(&out, GUI)
+                .widgets
+                .iter()
+                .all(|w| w.id != Id::GroupVolume && w.id != Id::GroupSounds)
+        );
     }
 
     #[test]
@@ -993,10 +1566,19 @@ mod tests {
         let m = model();
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Settings));
-        let r = menu.layout(&m, GUI).widgets.into_iter().find(|w| w.id == Id::Threshold).unwrap().rect;
+        let r = menu
+            .layout(&m, GUI)
+            .widgets
+            .into_iter()
+            .find(|w| w.id == Id::Threshold)
+            .unwrap()
+            .rect;
         let d = menu.draw(&m, GUI, [0.0; 2], &width);
         // -30 dB of -60..0 fills half the track.
-        assert!(d.contains(&Draw::Fill { rect: [r[0], r[1], r[2] * 0.5, r[3]], argb: LEVEL }));
+        assert!(d.contains(&Draw::Fill {
+            rect: [r[0], r[1], r[2] * 0.5, r[3]],
+            argb: LEVEL
+        }));
     }
 
     #[test]
@@ -1004,15 +1586,28 @@ mod tests {
         let m = model();
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Players));
-        let r = menu.layout(&m, GUI).widgets.into_iter().find(|w| w.id == Id::Player(Uuid([2; 16]))).unwrap().rect;
+        let r = menu
+            .layout(&m, GUI)
+            .widgets
+            .into_iter()
+            .find(|w| w.id == Id::Player(Uuid([2; 16])))
+            .unwrap()
+            .rect;
         assert_eq!(
             menu.press(&m, GUI, [r[0] + r[2] / 4.0, r[1] + 1.0]),
             Some(MenuAction::SetPlayerVolume(Uuid([2; 16]), 0.5))
         );
-        assert!(texts(&menu.draw(&m, GUI, [0.0; 2], &width)).iter().any(|t| t.starts_with("> Alice")));
+        assert!(
+            texts(&menu.draw(&m, GUI, [0.0; 2], &width))
+                .iter()
+                .any(|t| t.starts_with("> Alice"))
+        );
         let mut none = model();
         none.players.clear();
-        assert!(texts(&menu.draw(&none, GUI, [0.0; 2], &width)).contains(&"No players nearby".to_string()));
+        assert!(
+            texts(&menu.draw(&none, GUI, [0.0; 2], &width))
+                .contains(&"No players nearby".to_string())
+        );
     }
 
     #[test]
@@ -1020,7 +1615,10 @@ mod tests {
         let m = model();
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Groups));
-        assert_eq!(click(&mut menu, &m, Id::Group(Uuid([8; 16]))), Some(MenuAction::JoinGroup(Uuid([8; 16]), None)));
+        assert_eq!(
+            click(&mut menu, &m, Id::Group(Uuid([8; 16]))),
+            Some(MenuAction::JoinGroup(Uuid([8; 16]), None))
+        );
     }
 
     #[test]
@@ -1029,8 +1627,16 @@ mod tests {
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Groups));
         let l = menu.layout(&m, GUI);
-        assert!(l.widgets.iter().any(|w| w.id == Id::Group(Uuid([9; 16])) && w.lock));
-        assert!(l.widgets.iter().any(|w| w.id == Id::Group(Uuid([8; 16])) && !w.lock));
+        assert!(
+            l.widgets
+                .iter()
+                .any(|w| w.id == Id::Group(Uuid([9; 16])) && w.lock)
+        );
+        assert!(
+            l.widgets
+                .iter()
+                .any(|w| w.id == Id::Group(Uuid([8; 16])) && !w.lock)
+        );
 
         assert_eq!(click(&mut menu, &m, Id::Group(Uuid([9; 16]))), None);
         assert_eq!(menu.page(&m), Page::Password(Uuid([9; 16])));
@@ -1040,11 +1646,18 @@ mod tests {
         for c in "1221".chars() {
             menu.type_char(c);
         }
-        assert_eq!(menu.key(MenuKey::Enter), Some(MenuAction::JoinGroup(Uuid([9; 16]), Some("1221".into()))));
+        assert_eq!(
+            menu.key(MenuKey::Enter),
+            Some(MenuAction::JoinGroup(Uuid([9; 16]), Some("1221".into())))
+        );
         // A wrong password is shown on the same screen, to try again.
         let mut wrong = m.clone();
         wrong.group_problem = Some("wrong password".into());
-        assert!(texts(&menu.draw(&wrong, GUI, [0.0; 2], &width)).iter().any(|t| t.contains("wrong password")));
+        assert!(
+            texts(&menu.draw(&wrong, GUI, [0.0; 2], &width))
+                .iter()
+                .any(|t| t.contains("wrong password"))
+        );
         // Once in, the screen becomes the group's.
         assert_eq!(menu.page(&in_group()), Page::Groups);
     }
@@ -1069,7 +1682,11 @@ mod tests {
         menu.key(MenuKey::Backspace);
         assert_eq!(
             menu.key(MenuKey::Enter),
-            Some(MenuAction::CreateGroup { name: "Raid team".into(), password: Some("pw1".into()), kind: GroupType::Normal })
+            Some(MenuAction::CreateGroup {
+                name: "Raid team".into(),
+                password: Some("pw1".into()),
+                kind: GroupType::Normal
+            })
         );
         assert_eq!(menu.page(&m), Page::Groups, "back to the groups screen");
         assert!(!menu.typing());
@@ -1079,11 +1696,19 @@ mod tests {
             menu.type_char(c);
         }
         assert!(texts(&menu.draw(&m, GUI, [0.0; 2], &width)).contains(&"Type: Normal".to_string()));
-        assert_eq!(click(&mut menu, &m, Id::Kind), None, "the type button only changes the type");
+        assert_eq!(
+            click(&mut menu, &m, Id::Kind),
+            None,
+            "the type button only changes the type"
+        );
         assert!(texts(&menu.draw(&m, GUI, [0.0; 2], &width)).contains(&"Type: Open".to_string()));
         assert_eq!(
             click(&mut menu, &m, Id::Create),
-            Some(MenuAction::CreateGroup { name: "Open2".into(), password: None, kind: GroupType::Open })
+            Some(MenuAction::CreateGroup {
+                name: "Open2".into(),
+                password: None,
+                kind: GroupType::Open
+            })
         );
         // The type stays chosen for the next group; it goes round to normal again.
         click(&mut menu, &m, Id::Go(Page::CreateGroup));
@@ -1107,7 +1732,10 @@ mod tests {
             menu.type_char(c);
         }
         let shown = texts(&menu.draw(&m, GUI, [0.0; 2], &width));
-        assert!(shown.contains(&"******_".to_string()), "masked, with a caret: {shown:?}");
+        assert!(
+            shown.contains(&"******_".to_string()),
+            "masked, with a caret: {shown:?}"
+        );
         assert!(!shown.iter().any(|t| t.contains("secret")));
         menu.key(MenuKey::Escape);
         assert!(!menu.typing());
@@ -1121,40 +1749,80 @@ mod tests {
     fn in_a_group_shows_members_and_leave() {
         let m = in_group();
         let mut menu = Menu::new();
-        assert!(texts(&menu.draw(&m, GUI, [0.0; 2], &width)).contains(&"Group: Open".to_string()), "named on the main screen");
+        assert!(
+            texts(&menu.draw(&m, GUI, [0.0; 2], &width)).contains(&"Group: Open".to_string()),
+            "named on the main screen"
+        );
         click(&mut menu, &m, Id::Go(Page::Groups));
         let d = menu.draw(&m, GUI, [0.0; 2], &width);
         let shown = texts(&d);
         assert!(shown.contains(&"Group: Open".to_string()));
-        assert!(shown.iter().any(|t| t.starts_with("Alice") && t.contains("talking")));
+        assert!(
+            shown
+                .iter()
+                .any(|t| t.starts_with("Alice") && t.contains("talking"))
+        );
         assert!(shown.contains(&"Carol".to_string()));
         assert!(shown.contains(&"C".to_string()), "Carol's initial");
-        assert_eq!(click(&mut menu, &m, Id::Member(Uuid([3; 16]))), None, "members aren't buttons");
-        assert_eq!(click(&mut menu, &m, Id::Leave), Some(MenuAction::LeaveGroup));
+        assert_eq!(
+            click(&mut menu, &m, Id::Member(Uuid([3; 16]))),
+            None,
+            "members aren't buttons"
+        );
+        assert_eq!(
+            click(&mut menu, &m, Id::Leave),
+            Some(MenuAction::LeaveGroup)
+        );
     }
 
     #[test]
     fn every_screen_fits_with_long_lists_and_small_windows() {
         let mut m = model();
-        m.players = (0..30).map(|i| (Uuid([i; 16]), format!("Player{i}"), 1.0, false)).collect();
-        m.groups = (0..30).map(|i| (Uuid([i; 16]), format!("Group{i}"), i % 2 == 0, 2, false)).collect();
+        m.players = (0..30)
+            .map(|i| (Uuid([i; 16]), format!("Player{i}"), 1.0, false))
+            .collect();
+        m.groups = (0..30)
+            .map(|i| (Uuid([i; 16]), format!("Group{i}"), i % 2 == 0, 2, false))
+            .collect();
+        m.offline = (0..30)
+            .map(|i| (Uuid([i; 16]), format!("Gone{i}"), 1.0))
+            .collect();
         let mut g = in_group();
-        g.group_members = (0..30).map(|i| (Uuid([i; 16]), format!("M{i}"), false)).collect();
+        g.group_members = (0..30)
+            .map(|i| (Uuid([i; 16]), format!("M{i}"), false))
+            .collect();
         // 427 x 240 is the smallest GUI Minecraft gives (its minimum window at GUI scale 2).
         for gui in [GUI, [427.0, 240.0], [640.0, 360.0]] {
-            for page in [Page::Main, Page::Settings, Page::Players, Page::Groups, Page::CreateGroup, Page::Password(Uuid([0; 16]))] {
+            for page in [
+                Page::Main,
+                Page::Settings,
+                Page::Advanced,
+                Page::Display,
+                Page::Positions,
+                Page::Players,
+                Page::Groups,
+                Page::CreateGroup,
+                Page::Password(Uuid([0; 16])),
+            ] {
                 for model in [&m, &g] {
                     let mut menu = Menu::new();
                     menu.page = page;
                     let l = menu.layout(model, gui);
-                    assert!(l.panel[0] >= 0.0 && l.panel[0] + l.panel[2] <= gui[0], "{page:?} {gui:?} too wide");
+                    assert!(
+                        l.panel[0] >= 0.0 && l.panel[0] + l.panel[2] <= gui[0],
+                        "{page:?} {gui:?} too wide"
+                    );
                     assert!(
                         l.panel[1] >= 0.0 && l.panel[1] + l.panel[3] <= gui[1] + 0.01,
                         "{page:?} {gui:?}: panel {:?} doesn't fit",
                         l.panel
                     );
                     for w in &l.widgets {
-                        assert!(inside(l.panel, [w.rect[0], w.rect[1]]), "{page:?}: {:?} outside", w.id);
+                        assert!(
+                            inside(l.panel, [w.rect[0], w.rect[1]]),
+                            "{page:?}: {:?} outside",
+                            w.id
+                        );
                     }
                 }
             }
@@ -1167,8 +1835,17 @@ mod tests {
         m.microphone = "A very long ALSA device name that goes on and on and on".into();
         let mut menu = Menu::new();
         click(&mut menu, &m, Id::Go(Page::Settings));
-        let r = menu.layout(&m, GUI).widgets.into_iter().find(|w| w.id == Id::Microphone).unwrap().rect;
-        let label = texts(&menu.draw(&m, GUI, [0.0; 2], &width)).into_iter().find(|t| t.starts_with("Input:")).unwrap();
+        let r = menu
+            .layout(&m, GUI)
+            .widgets
+            .into_iter()
+            .find(|w| w.id == Id::Microphone)
+            .unwrap()
+            .rect;
+        let label = texts(&menu.draw(&m, GUI, [0.0; 2], &width))
+            .into_iter()
+            .find(|t| t.starts_with("Input:"))
+            .unwrap();
         assert!(width(&label) <= r[2] - 8.0, "{label}");
         assert!(label.ends_with('…'));
     }
@@ -1180,5 +1857,82 @@ mod tests {
         let p = menu.layout(&m, GUI).panel;
         assert!(menu.contains(&m, GUI, [p[0] + 1.0, p[1] + 1.0]));
         assert!(!menu.contains(&m, GUI, [1.0, 1.0]));
+    }
+
+    #[test]
+    fn option_pages_edit_options() {
+        let mut m = model();
+        let mut menu = Menu::new();
+        click(&mut menu, &m, Id::Go(Page::Advanced));
+        assert_eq!(
+            click(&mut menu, &m, Id::Opt(Opt::MuteOnJoin)),
+            Some(MenuAction::Set(Opt::MuteOnJoin, 0.0))
+        );
+        assert_eq!(
+            click(&mut menu, &m, Id::Opt(Opt::AudioType)),
+            Some(MenuAction::Set(Opt::AudioType, 0.0))
+        );
+        // A slider's left end is its minimum and its right end the maximum.
+        let r = menu
+            .layout(&m, GUI)
+            .widgets
+            .into_iter()
+            .find(|w| w.id == Id::Opt(Opt::OutputBufferSize))
+            .unwrap()
+            .rect;
+        assert_eq!(
+            menu.press(&m, GUI, [r[0], r[1] + 2.0]),
+            Some(MenuAction::Set(Opt::OutputBufferSize, 1.0))
+        );
+        assert_eq!(
+            menu.drag(&m, GUI, [r[0] + r[2], r[1]]),
+            Some(MenuAction::Set(Opt::OutputBufferSize, 16.0))
+        );
+        menu.release();
+        m.options.mute_on_join = true;
+        let on = texts(&menu.draw(&m, GUI, [0.0; 2], &width));
+        assert!(on.iter().any(|t| t == "Mute on join: on"), "{on:?}");
+        // Positions are two pages in, and Back goes one page out.
+        let mut menu = Menu::new();
+        click(&mut menu, &m, Id::Go(Page::Display));
+        click(&mut menu, &m, Id::Go(Page::Positions));
+        assert_eq!(menu.page(&m), Page::Positions);
+        click(&mut menu, &m, Id::Back);
+        assert_eq!(menu.page(&m), Page::Display);
+        // A scale slider moves in steps of 0.05.
+        let r = menu
+            .layout(&m, GUI)
+            .widgets
+            .into_iter()
+            .find(|w| w.id == Id::Opt(Opt::HudIconScale))
+            .unwrap()
+            .rect;
+        let Some(MenuAction::Set(_, v)) = menu.press(&m, GUI, [r[0] + r[2] / 2.0, r[1]]) else {
+            panic!()
+        };
+        assert!(
+            ((v * 20.0).round() / 20.0 - v).abs() < 1e-5 && (v - 2.125).abs() < 0.03,
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn offline_players_are_listed_with_their_volume() {
+        let mut m = model();
+        m.offline = vec![(Uuid([9; 16]), "Gone".into(), 0.5)];
+        let mut menu = Menu::new();
+        menu.open_at(Page::Players);
+        let t = texts(&menu.draw(&m, GUI, [0.0; 2], &width));
+        assert!(t.iter().any(|t| t == "Gone (offline): 50%"), "{t:?}");
+        assert_eq!(
+            click(&mut menu, &m, Id::Player(Uuid([9; 16]))),
+            Some(MenuAction::SetPlayerVolume(Uuid([9; 16]), 1.0))
+        );
+        m.offline.clear();
+        assert!(
+            !texts(&menu.draw(&m, GUI, [0.0; 2], &width))
+                .iter()
+                .any(|t| t.contains("offline"))
+        );
     }
 }

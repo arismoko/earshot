@@ -9,7 +9,8 @@ use std::collections::HashMap;
 
 use earshot_core::activation::{Mode, PttKey};
 use earshot_core::engine::{GroupInfo, Settings, Status, VoiceClient};
-use earshot_core::menu::{Menu, MenuAction, MenuKey, MenuModel};
+use earshot_core::menu::{Menu, MenuAction, MenuKey, MenuModel, Page};
+use earshot_core::options::{self, OptKind, Options, Orientation};
 use earshot_core::plugin;
 use earshot_core::spatial::Listener;
 use earshot_core::ui::{self, Draw, MicState};
@@ -26,8 +27,29 @@ pub const KEY_PTT: (&str, &str, &str) = ("push_to_talk", "Push to talk", "key.mo
 /// Held: talk as a whisper, heard only nearby (capture 07). The other side button by default.
 pub const KEY_WHISPER: (&str, &str, &str) = ("whisper", "Whisper", "key.mouse.5");
 pub const KEY_MUTE: (&str, &str, &str) = ("mute", "Mute microphone", "key.keyboard.m");
-pub const KEY_DEAFEN: (&str, &str, &str) = ("deafen", "Deafen", "key.keyboard.n");
-pub const KEYS: [(&str, &str, &str); 5] = [KEY_MENU, KEY_PTT, KEY_WHISPER, KEY_MUTE, KEY_DEAFEN];
+/// Earshot's own, not in the original: deafen. Unbound until the player picks a key.
+pub const KEY_DEAFEN: (&str, &str, &str) = ("deafen", "Deafen", UNBOUND);
+/// The original's other keys: turn voice chat off, hide the icons, open the settings, the
+/// groups and the volume list directly.
+pub const KEY_DISABLE: (&str, &str, &str) = ("disable", "Disable voice chat", "key.keyboard.n");
+pub const KEY_HIDE_ICONS: (&str, &str, &str) =
+    ("hide_icons", "Hide voice chat icons", "key.keyboard.h");
+pub const KEY_SETTINGS: (&str, &str, &str) = ("settings", "Voice chat settings", UNBOUND);
+pub const KEY_GROUP: (&str, &str, &str) = ("group", "Group management", "key.keyboard.g");
+pub const KEY_VOLUMES: (&str, &str, &str) = ("adjust_volumes", "Adjust volumes", UNBOUND);
+pub const KEYS: [(&str, &str, &str); 10] = [
+    KEY_MENU,
+    KEY_PTT,
+    KEY_WHISPER,
+    KEY_MUTE,
+    KEY_DEAFEN,
+    KEY_DISABLE,
+    KEY_HIDE_ICONS,
+    KEY_SETTINGS,
+    KEY_GROUP,
+    KEY_VOLUMES,
+];
+const UNBOUND: &str = "key.keyboard.unknown";
 
 /// The settings page's two switches (the menu holds the rest).
 pub const SETTING_VOICE: &str = "voice_chat";
@@ -63,6 +85,10 @@ struct State {
     file: HashMap<String, String>,
     /// The players the voice server told of, by entity id, for the name tag icons.
     entities: HashMap<u32, Uuid>,
+    /// The players' names, kept beside their volumes so offline players can be listed.
+    names: HashMap<Uuid, String>,
+    /// The world was being played last tick (to see joining it).
+    was_playing: bool,
     /// The menu key was pressed on the menu: it closes on the next tick (closing a screen
     /// needs the tick's host).
     close_menu: bool,
@@ -128,6 +154,7 @@ fn load(host: &dyn ClientHost) -> State {
         group_volume: num("group_volume", 1.0),
         group_sounds: get("group_sounds").as_deref() != Some("false"),
         use_audio_devices: true,
+        options: Options::from_file(&file),
     };
     let volumes = file
         .iter()
@@ -137,6 +164,10 @@ fn load(host: &dyn ClientHost) -> State {
                 v.parse::<f32>().ok()?,
             ))
         })
+        .collect::<HashMap<_, _>>();
+    let names = file
+        .iter()
+        .filter_map(|(k, v)| Some((Uuid::parse(k.strip_prefix("name.")?)?, v.clone())))
         .collect::<HashMap<_, _>>();
     let client = VoiceClient::new(settings.clone());
     client.apply_settings(settings.clone());
@@ -167,6 +198,8 @@ fn load(host: &dyn ClientHost) -> State {
         debug,
         file,
         entities: HashMap::new(),
+        names,
+        was_playing: false,
         close_menu: false,
     }
 }
@@ -202,8 +235,12 @@ fn save(host: &dyn Host, s: &mut State) {
     set("group_sounds", s.settings.group_sounds.to_string());
     set("muted", s.muted.to_string());
     set("deafened", s.deafened.to_string());
+    s.settings.options.write_to(&mut s.file);
     for (id, v) in &s.volumes {
         s.file.insert(format!("volume.{id}"), v.to_string());
+        if let Some(name) = s.names.get(id) {
+            s.file.insert(format!("name.{id}"), name.clone());
+        }
     }
     let mut lines: Vec<String> = s.file.iter().map(|(k, v)| format!("{k}={v}")).collect();
     lines.sort();
@@ -368,7 +405,22 @@ pub fn tick(host: &mut dyn ClientHost) {
     let whisper_down = key_down(reads, KEY_WHISPER.0);
     let status = with_state(reads, |s| s.client.status());
     let players = players(reads, &status);
+    let mut joined_muted = false;
+    let me = status.me;
     with_state(reads, |s| {
+        // Remember the names of players whose volumes we keep.
+        for (id, name) in &status.player_names {
+            if s.volumes.contains_key(id) && s.names.get(id) != Some(name) && Some(*id) != me {
+                s.names.insert(*id, name.clone());
+            }
+        }
+        // Joining a world: start muted if asked to.
+        if playing && !s.was_playing && s.settings.options.mute_on_join && !s.muted {
+            s.muted = true;
+            s.client.set_muted(true);
+            joined_muted = true;
+        }
+        s.was_playing = playing;
         // The mic test lasts only while the menu is open.
         if s.mic_test && !menu_open {
             s.mic_test = false;
@@ -390,16 +442,41 @@ pub fn tick(host: &mut dyn ClientHost) {
     }
     // The keys pressed while playing: the menu, mute and deafen.
     if key_clicked(host, KEY_MENU.0) {
-        with_state(&*host, |s| {
-            s.ptt_key.release();
-            s.ptt = false;
-            s.whisper = false;
-            // Start on the main screen each time.
-            s.menu.open();
-        });
-        host.mod_screen_open(ID);
+        // Start on the main screen each time.
+        open_page(host, Page::Main);
     }
-    let mut changed = false;
+    if key_clicked(host, KEY_SETTINGS.0) {
+        open_page(host, Page::Settings);
+    }
+    if key_clicked(host, KEY_GROUP.0) {
+        open_page(host, Page::Groups);
+    }
+    if key_clicked(host, KEY_VOLUMES.0) {
+        open_page(host, Page::Players);
+    }
+    let mut changed = joined_muted;
+    while key_clicked(host, KEY_HIDE_ICONS.0) {
+        let hidden = with_state(&*host, |s| {
+            let o = &mut s.settings.options;
+            o.hide_icons = !o.hide_icons;
+            let hidden = o.hide_icons;
+            s.client.apply_settings(s.settings.clone());
+            hidden
+        });
+        let key = if hidden {
+            "earshot.message.icons_hidden"
+        } else {
+            "earshot.message.icons_visible"
+        };
+        let _ = host.set_overlay_message(mod_api::Text::translate(key, vec![]), false);
+        changed = true;
+    }
+    while key_clicked(host, KEY_DISABLE.0) {
+        with_state(&*host, |s| {
+            s.disabled = !s.disabled;
+            s.client.set_disabled(s.disabled);
+        });
+    }
     while key_clicked(host, KEY_MUTE.0) {
         with_state(&*host, |s| {
             s.muted = !s.muted;
@@ -419,6 +496,17 @@ pub fn tick(host: &mut dyn ClientHost) {
         let _ = with_existing(|s| save(reads, s));
     }
     flush(host);
+}
+
+/// Opens the voice menu on `page` (the keys that go straight to a screen).
+fn open_page(host: &mut dyn ClientHost, page: Page) {
+    with_state(&*host, |s| {
+        s.ptt_key.release();
+        s.ptt = false;
+        s.whisper = false;
+        s.menu.open_at(page);
+    });
+    host.mod_screen_open(ID);
 }
 
 /// The settings page changed: voice on or off, debug info.
@@ -456,6 +544,12 @@ fn paint(draw: &mut dyn DrawContext, draws: &[Draw]) {
             Draw::Fill { rect, argb } => draw.fill(*rect, *argb),
             Draw::Quad { points, argb } => draw.quad(*points, *argb),
             Draw::Label { text, at, rgb } => draw.text(text, *at, 0xFF00_0000 | rgb, true),
+            Draw::Scaled {
+                text,
+                at,
+                rgb,
+                scale,
+            } => draw.text_scaled(text, *at, *scale, 0xFF00_0000 | rgb, true),
         }
     }
 }
@@ -474,57 +568,89 @@ fn mic_state(s: &Status) -> MicState {
     }
 }
 
-/// The HUD: the microphone icon bottom left, a line while connecting, and in a voice
-/// group the group panel top left (its members, who's talking lit up).
+/// The HUD: the microphone icon, a line while connecting, and in a voice group the group
+/// panel (its members, who's talking lit up). Where they go, their size and whether they
+/// show come from the icon options.
 pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corners) {
-    let Some(status) = with_existing(|s| s.client.status()) else {
+    let Some((status, o)) = with_existing(|s| (s.client.status(), s.settings.options.clone()))
+    else {
         return;
     };
-    if status.connection == "no voice server" {
+    if status.connection == "no voice server" || o.hide_icons {
         return;
     }
     if !status.connected {
-        let text = format!("Voice: {}", status.connection);
-        let w = width(host, &text) + 8.0;
-        let (x, y) = corners.place(Corner::TopLeft, w, 13.0);
-        draw.fill([x, y, w, 13.0], 0x7800_0000);
-        draw.text(&text, [x + 4.0, y + 3.0], 0xFFFF_AA55, true);
+        if o.show_hud_icons {
+            let text = format!("Voice: {}", status.connection);
+            let w = width(host, &text) + 8.0;
+            let (x, y) = corners.place(Corner::TopLeft, w, 13.0);
+            draw.fill([x, y, w, 13.0], 0x7800_0000);
+            draw.text(&text, [x + 4.0, y + 3.0], 0xFFFF_AA55, true);
+        }
         return;
     }
-    let state = mic_state(&status);
+    let gui = draw.size();
+    if o.show_hud_icons {
+        let (size, draws) = mic_cluster(host, &status);
+        let scale = o.hud_icon_scale;
+        let at = [
+            options::anchored(o.hud_icon_pos_x, size[0] * scale, gui[0]),
+            options::anchored(o.hud_icon_pos_y, size[1] * scale, gui[1]),
+        ];
+        paint(draw, &ui::translate(ui::scale(draws, scale), at));
+    }
+    if o.show_group_hud
+        && let Some((size, draws)) = group_panel(host, &status, &o)
+    {
+        let scale = o.group_hud_icon_scale / 2.0;
+        let at = [
+            options::anchored(o.group_player_icon_pos_x, size[0] * scale, gui[0]),
+            options::anchored(o.group_player_icon_pos_y, size[1] * scale, gui[1]),
+        ];
+        paint(draw, &ui::translate(ui::scale(draws, scale), at));
+    }
+}
+
+/// The microphone icon (and the deafened one, and the group's name): its size and draws with
+/// its top-left at (0, 0).
+fn mic_cluster(host: &dyn ClientHost, status: &Status) -> ([f32; 2], Vec<Draw>) {
     let icons = if status.deafened { 2.0 } else { 1.0 };
     let group = status
         .my_group
         .as_ref()
         .map(|g| format!("Group: {}", g.name));
     let text_w = group.as_ref().map(|t| width(host, t) + 8.0).unwrap_or(0.0);
-    let (x, y) = corners.place(Corner::BottomLeft, 22.0 * icons + text_w, 20.0);
-    let mut draws = ui::mic_icon([x + 2.0, y + 2.0], state);
+    let mut draws = ui::mic_icon([2.0, 2.0], mic_state(status));
     if status.deafened {
-        draws.extend(ui::deafened_icon([x + 24.0, y + 2.0]));
+        draws.extend(ui::deafened_icon([24.0, 2.0]));
     }
-    paint(draw, &draws);
     if let Some(text) = group {
-        let tx = x + 22.0 * icons + 2.0;
-        draw.fill([tx - 2.0, y, text_w, 20.0], 0x7800_0000);
-        draw.text(&text, [tx + 2.0, y + 6.0], 0xFF7C_E38B, true);
+        let tx = 22.0 * icons + 2.0;
+        draws.push(Draw::Fill {
+            rect: [tx - 2.0, 0.0, text_w, 20.0],
+            argb: 0x7800_0000,
+        });
+        draws.push(Draw::Label {
+            text,
+            at: [tx + 2.0, 6.0],
+            rgb: 0x7CE38B,
+        });
     }
-    group_panel(host, draw, corners, &status);
+    ([22.0 * icons + text_w, 20.0], draws)
 }
 
-/// In a voice group: its members top left, those talking now lit up with a speaker.
+/// In a voice group: its members, those talking now lit up with a speaker. Its size and
+/// draws with its top-left at (0, 0).
 fn group_panel(
     host: &dyn ClientHost,
-    draw: &mut dyn DrawContext,
-    corners: &mut Corners,
     status: &Status,
-) {
-    let Some(group) = &status.my_group else {
-        return;
-    };
+    o: &Options,
+) -> Option<([f32; 2], Vec<Draw>)> {
+    let group = status.my_group.as_ref()?;
     let members: Vec<ui::PanelMember> = group
         .members
         .iter()
+        .filter(|(id, _)| o.show_own_group_icon || status.me != Some(*id))
         .map(|(id, name)| {
             let me = status.me == Some(*id);
             // Our own voice isn't played back to us: we're talking while the microphone sends.
@@ -540,9 +666,12 @@ fn group_panel(
             }
         })
         .collect();
-    let (size, draws) = ui::group_panel(&group.name, &members, &|t| width(host, t));
-    let (x, y) = corners.place(Corner::TopLeft, size[0], size[1]);
-    paint(draw, &ui::translate(draws, [x, y]));
+    Some(ui::group_panel(
+        &format!("Group: {}", group.name),
+        &members,
+        o.group_player_icon_orientation == Orientation::Horizontal,
+        &|t| width(host, t),
+    ))
 }
 
 /// A name tag icon's lines (each from one point to another) and their colour.
@@ -554,6 +683,10 @@ pub type TagIcon = (Vec<([f32; 2], [f32; 2])>, u32);
 /// icon's centre, and their colour.
 pub fn tag_icon(entity: u32) -> Option<TagIcon> {
     with_existing(|s| {
+        let o = &s.settings.options;
+        if o.hide_icons || !o.show_nametag_icons {
+            return None;
+        }
         let status = s.client.status();
         let on_voice_server = status.connected;
         let id = s.entities.get(&entity).copied();
@@ -564,7 +697,10 @@ pub fn tag_icon(entity: u32) -> Option<TagIcon> {
                 status.has_voice.contains(&id),
                 on_voice_server,
             ),
-            None if on_voice_server => ui::tag_icon_for(false, false, false, true),
+            // A player the server's states don't list (an NPC): marked only if asked to.
+            None if on_voice_server && o.show_fake_players_disconnected => {
+                ui::tag_icon_for(false, false, false, true)
+            }
             None => None,
         }?;
         let (lines, argb) = ui::tag_icon(icon);
@@ -628,6 +764,33 @@ fn group_label(g: &GroupInfo) -> String {
     }
 }
 
+/// Players with a saved volume who aren't on the server now, when their volumes may be adjusted.
+fn offline_players(s: &State, status: &Status) -> Vec<(Uuid, String, f32)> {
+    if !s.settings.options.offline_player_volume_adjustment {
+        return vec![];
+    }
+    let mut out: Vec<(Uuid, String, f32)> = s
+        .volumes
+        .iter()
+        .filter(|(id, _)| {
+            !status.player_names.iter().any(|p| p.0 == **id) && status.me != Some(**id)
+        })
+        .map(|(id, v)| {
+            (
+                *id,
+                s.names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+                *v,
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.1.to_lowercase()
+            .cmp(&b.1.to_lowercase())
+            .then(a.0.cmp(&b.0))
+    });
+    out
+}
+
 fn model(host: &dyn ClientHost, s: &State) -> MenuModel {
     let status = s.client.status();
     let players = nearby_players(host, &status)
@@ -668,6 +831,8 @@ fn model(host: &dyn ClientHost, s: &State) -> MenuModel {
         microphone: device_label(&s.settings.input_device, &status.input_device),
         speakers: device_label(&s.settings.output_device, &status.output_device),
         players,
+        offline: offline_players(s, &status),
+        options: s.settings.options.clone(),
         group: status.my_group.as_ref().map(|g| g.name.clone()),
         groups: status
             .groups
@@ -812,6 +977,11 @@ fn apply(s: &mut State, action: MenuAction) -> bool {
             s.client.leave_group();
             settings_changed = false;
             false
+        }
+        MenuAction::Set(opt, v) => {
+            s.settings.options.set(opt, v);
+            // Sliders save when let go; toggles and choices at once.
+            !matches!(opt.kind(), OptKind::Int { .. } | OptKind::Scale { .. })
         }
         MenuAction::SetPlayerVolume(id, v) => {
             s.volumes.insert(id, v);
@@ -969,5 +1139,23 @@ mod tests {
         assert_eq!(next_device(devices(), &None), Some("A".to_owned()));
         assert_eq!(next_device(devices(), &Some("B".to_owned())), None);
         assert_eq!(next_device(devices(), &Some("gone".to_owned())), None);
+    }
+
+    #[test]
+    fn the_keys_are_the_originals_with_their_defaults() {
+        let default = |id: &str| KEYS.iter().find(|k| k.0 == id).map(|k| k.2);
+        assert_eq!(default("menu"), Some("key.keyboard.v"));
+        assert_eq!(default("group"), Some("key.keyboard.g"));
+        assert_eq!(default("hide_icons"), Some("key.keyboard.h"));
+        assert_eq!(default("mute"), Some("key.keyboard.m"));
+        assert_eq!(default("disable"), Some("key.keyboard.n"));
+        assert_eq!(default("settings"), Some(UNBOUND));
+        assert_eq!(default("adjust_volumes"), Some(UNBOUND));
+        // Earshot's own deafen key mustn't take the original's N.
+        assert_eq!(default("deafen"), Some(UNBOUND));
+        let mut ids: Vec<&str> = KEYS.iter().map(|k| k.0).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), KEYS.len());
     }
 }

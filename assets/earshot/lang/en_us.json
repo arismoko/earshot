@@ -5,5 +5,12 @@
   "earshot.key.mute": "Mute microphone",
   "earshot.key.deafen": "Deafen",
   "earshot.option.voice_chat": "Voice chat",
-  "earshot.option.debug": "Debug info"
+  "earshot.option.debug": "Debug info",
+  "earshot.key.disable": "Disable voice chat",
+  "earshot.key.hide_icons": "Hide voice chat icons",
+  "earshot.key.settings": "Voice chat settings",
+  "earshot.key.group": "Group management",
+  "earshot.key.adjust_volumes": "Adjust volumes",
+  "earshot.message.icons_hidden": "Voice chat icons hidden",
+  "earshot.message.icons_visible": "Voice chat icons visible"
 }
