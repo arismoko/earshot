@@ -34,11 +34,37 @@ pub struct JitterConfig {
     /// A sequence this far ahead of the expected one starts a new talk spurt instead of being
     /// treated as a long loss.
     pub restart_gap: u64,
+    /// When the next frame is missing but later ones are here, wait until this many later
+    /// frames have arrived (or as many ticks have passed) before giving it up as lost, so a
+    /// late packet can still take its place (`audio_packet_threshold`). 0 gives it up at once.
+    pub reorder_threshold: usize,
 }
 
 impl Default for JitterConfig {
     fn default() -> Self {
-        Self { target_frames: 3, max_wait_ticks: 6, max_frames: 12, conceal_ticks: 2, end_ticks: 10, restart_gap: 50 }
+        Self {
+            target_frames: 3,
+            max_wait_ticks: 6,
+            max_frames: 12,
+            conceal_ticks: 2,
+            end_ticks: 10,
+            restart_gap: 50,
+            reorder_threshold: 0,
+        }
+    }
+}
+
+impl JitterConfig {
+    /// The config for SVC's `output_buffer_size` (frames collected before playing) and
+    /// `audio_packet_threshold`.
+    pub fn buffered(output_buffer_size: usize, packet_threshold: usize) -> Self {
+        let target_frames = output_buffer_size.max(1);
+        Self {
+            target_frames,
+            max_frames: (target_frames + packet_threshold + 4).max(12),
+            reorder_threshold: packet_threshold,
+            ..Self::default()
+        }
     }
 }
 
@@ -47,7 +73,11 @@ enum State {
     /// Collecting frames before playing; `waited` counts ticks since the first one came.
     Buffering { waited: u32 },
     /// Playing; `next` is the sequence to hand out next.
-    Playing { next: u64, empty_run: u32 },
+    Playing {
+        next: u64,
+        empty_run: u32,
+        held: usize,
+    },
 }
 
 pub struct JitterBuffer {
@@ -58,7 +88,16 @@ pub struct JitterBuffer {
 
 impl JitterBuffer {
     pub fn new(cfg: JitterConfig) -> Self {
-        Self { cfg, frames: BTreeMap::new(), state: State::Buffering { waited: 0 } }
+        Self {
+            cfg,
+            frames: BTreeMap::new(),
+            state: State::Buffering { waited: 0 },
+        }
+    }
+
+    /// Changes the buffering. Frames held stay; the new limits apply from the next push or pop.
+    pub fn set_config(&mut self, cfg: JitterConfig) {
+        self.cfg = cfg;
     }
 
     /// Frames held right now.
@@ -111,17 +150,44 @@ impl JitterBuffer {
                     return Pop::Silent;
                 }
                 let (&first, _) = self.frames.first_key_value().unwrap();
-                self.state = State::Playing { next: first, empty_run: 0 };
+                self.state = State::Playing {
+                    next: first,
+                    empty_run: 0,
+                    held: 0,
+                };
                 self.pop()
             }
-            State::Playing { next, empty_run } => {
+            State::Playing {
+                next,
+                empty_run,
+                held,
+            } => {
                 if let Some(frame) = self.frames.remove(&next) {
-                    self.state = State::Playing { next: next + 1, empty_run: 0 };
+                    self.state = State::Playing {
+                        next: next + 1,
+                        empty_run: 0,
+                        held: 0,
+                    };
                     return Pop::Frame(frame);
                 }
                 if !self.frames.is_empty() {
-                    // A later frame is here, so this one is lost, not just slow.
-                    self.state = State::Playing { next: next + 1, empty_run: 0 };
+                    // A later frame is here, so this one is lost, not just slow: unless the
+                    // threshold asks us to give it a few more ticks to turn up.
+                    if self.frames.len() < self.cfg.reorder_threshold
+                        && held < self.cfg.reorder_threshold
+                    {
+                        self.state = State::Playing {
+                            next,
+                            empty_run: 0,
+                            held: held + 1,
+                        };
+                        return Pop::Silent;
+                    }
+                    self.state = State::Playing {
+                        next: next + 1,
+                        empty_run: 0,
+                        held: 0,
+                    };
                     return Pop::Lost;
                 }
                 let empty_run = empty_run + 1;
@@ -131,11 +197,19 @@ impl JitterBuffer {
                 }
                 if empty_run <= self.cfg.conceal_ticks {
                     // Probably a delayed frame mid-speech: conceal and move on.
-                    self.state = State::Playing { next: next + 1, empty_run };
+                    self.state = State::Playing {
+                        next: next + 1,
+                        empty_run,
+                        held: 0,
+                    };
                     Pop::Lost
                 } else {
                     // Probably the end of speech: stay quiet but keep our place for a while.
-                    self.state = State::Playing { next, empty_run };
+                    self.state = State::Playing {
+                        next,
+                        empty_run,
+                        held: 0,
+                    };
                     Pop::Silent
                 }
             }
@@ -180,7 +254,10 @@ mod tests {
             b.push(s, frame(s));
         }
         let out: Vec<Pop> = (0..5).map(|_| b.pop()).collect();
-        assert_eq!(out, (0..5).map(|s| Pop::Frame(frame(s))).collect::<Vec<_>>());
+        assert_eq!(
+            out,
+            (0..5).map(|s| Pop::Frame(frame(s))).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -244,7 +321,11 @@ mod tests {
         }
         let tail: Vec<Pop> = (0..cfg.end_ticks).map(|_| b.pop()).collect();
         assert_eq!(&tail[..cfg.conceal_ticks as usize], &[Pop::Lost, Pop::Lost]);
-        assert!(tail[cfg.conceal_ticks as usize..].iter().all(|p| *p == Pop::Silent));
+        assert!(
+            tail[cfg.conceal_ticks as usize..]
+                .iter()
+                .all(|p| *p == Pop::Silent)
+        );
         assert!(!b.is_playing());
     }
 
@@ -322,5 +403,66 @@ mod tests {
         }
         assert_eq!(b.len(), cfg.max_frames);
         assert_eq!(b.pop(), Pop::Frame(frame(5)));
+    }
+
+    #[test]
+    fn buffer_size_sets_how_many_frames_are_collected_first() {
+        let mut b = JitterBuffer::new(JitterConfig::buffered(5, 0));
+        for s in 0..4 {
+            b.push(s, frame(s));
+            assert_eq!(b.pop(), Pop::Silent, "{} of 5", s + 1);
+        }
+        b.push(4, frame(4));
+        assert_eq!(b.pop(), Pop::Frame(frame(0)));
+        let mut b = JitterBuffer::new(JitterConfig::buffered(1, 0));
+        b.push(0, frame(0));
+        assert_eq!(
+            b.pop(),
+            Pop::Frame(frame(0)),
+            "a buffer of one plays at once"
+        );
+    }
+
+    #[test]
+    fn the_threshold_waits_for_a_late_frame_to_take_its_place() {
+        let mut b = JitterBuffer::new(JitterConfig::buffered(1, 3));
+        for s in [0, 1, 3] {
+            b.push(s, frame(s));
+        }
+        assert_eq!(b.pop(), Pop::Frame(frame(0)));
+        assert_eq!(b.pop(), Pop::Frame(frame(1)));
+        assert_eq!(b.pop(), Pop::Silent, "2 is held for, not yet given up");
+        b.push(2, frame(2));
+        assert_eq!(b.pop(), Pop::Frame(frame(2)), "it arrived in time");
+        assert_eq!(b.pop(), Pop::Frame(frame(3)));
+    }
+
+    #[test]
+    fn the_threshold_gives_up_after_enough_later_frames_or_ticks() {
+        // Enough later frames: lost at once.
+        let mut b = JitterBuffer::new(JitterConfig::buffered(1, 2));
+        for s in [0, 2, 3] {
+            b.push(s, frame(s));
+        }
+        assert_eq!(b.pop(), Pop::Frame(frame(0)));
+        assert_eq!(b.pop(), Pop::Lost);
+        assert_eq!(b.pop(), Pop::Frame(frame(2)));
+        // Too few later frames: waits the threshold in ticks, then gives up.
+        let mut b = JitterBuffer::new(JitterConfig::buffered(1, 3));
+        for s in [0, 2] {
+            b.push(s, frame(s));
+        }
+        assert_eq!(b.pop(), Pop::Frame(frame(0)));
+        for _ in 0..3 {
+            assert_eq!(b.pop(), Pop::Silent);
+        }
+        assert_eq!(b.pop(), Pop::Lost);
+        assert_eq!(b.pop(), Pop::Frame(frame(2)));
+    }
+
+    #[test]
+    fn the_buffer_can_hold_what_the_threshold_asks_for() {
+        let c = JitterConfig::buffered(16, 16);
+        assert!(c.max_frames >= c.target_frames + c.reorder_threshold);
     }
 }

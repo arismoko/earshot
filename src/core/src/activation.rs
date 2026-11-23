@@ -24,21 +24,39 @@ pub enum Mode {
 #[derive(Debug, Clone)]
 pub struct Activation {
     pub mode: Mode,
-    /// Frames to keep sending after the level drops (voice mode), so word endings aren't cut.
+    /// Frames to keep sending after the level drops (voice mode), so word endings aren't cut
+    /// (`voice_deactivation_delay`).
     pub hold_frames: u32,
+    /// Frames to keep sending after the push-to-talk key is let go (`ptt_deactivation_delay`).
+    pub ptt_hold_frames: u32,
     held: u32,
 }
 
 impl Activation {
+    /// With SVC's default delays: 25 frames (500 ms) after the voice, 5 (100 ms) after the key.
     pub fn new(mode: Mode) -> Self {
-        // 15 frames = 300 ms of hold.
-        Self { mode, hold_frames: 15, held: 0 }
+        Self {
+            mode,
+            hold_frames: 25,
+            ptt_hold_frames: 5,
+            held: 0,
+        }
     }
 
     /// Whether this 20 ms frame should be sent.
     pub fn frame(&mut self, level_dbfs: f32, key_down: bool) -> bool {
         match self.mode {
-            Mode::PushToTalk => key_down,
+            Mode::PushToTalk => {
+                if key_down {
+                    self.held = self.ptt_hold_frames;
+                    true
+                } else if self.held > 0 {
+                    self.held -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
             Mode::Voice { threshold_dbfs } => {
                 if level_dbfs >= threshold_dbfs {
                     self.held = self.hold_frames;
@@ -129,20 +147,42 @@ mod tests {
     }
 
     #[test]
-    fn push_to_talk_follows_the_key() {
+    fn push_to_talk_follows_the_key_and_trails_by_its_delay() {
         let mut a = Activation::new(Mode::PushToTalk);
         assert!(!a.frame(0.0, false));
         assert!(a.frame(-127.0, true));
+        for _ in 0..5 {
+            assert!(
+                a.frame(-127.0, false),
+                "the default 5 frames after the key is let go"
+            );
+        }
+        assert!(!a.frame(-127.0, false));
+        a.ptt_hold_frames = 0;
+        assert!(a.frame(-127.0, true));
+        assert!(!a.frame(-127.0, false), "no delay: stops with the key");
+        a.ptt_hold_frames = 100;
+        assert!(a.frame(-127.0, true));
+        for i in 0..100 {
+            assert!(a.frame(-127.0, false), "frame {i}");
+        }
+        assert!(!a.frame(-127.0, false));
     }
 
     #[test]
-    fn voice_activation_holds_after_speech() {
-        let mut a = Activation::new(Mode::Voice { threshold_dbfs: -40.0 });
+    fn voice_activation_holds_after_speech_by_its_delay() {
+        let mut a = Activation::new(Mode::Voice {
+            threshold_dbfs: -40.0,
+        });
         assert!(!a.frame(-60.0, false));
         assert!(a.frame(-30.0, false));
-        for _ in 0..15 {
+        for _ in 0..25 {
             assert!(a.frame(-60.0, false), "held");
         }
         assert!(!a.frame(-60.0, false), "released after the hold");
+        a.hold_frames = 2;
+        assert!(a.frame(-30.0, false));
+        assert!(a.frame(-60.0, false) && a.frame(-60.0, false));
+        assert!(!a.frame(-60.0, false));
     }
 }

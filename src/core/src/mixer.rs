@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::codec::{Decoder, FRAME_SAMPLES};
 use crate::jitter::{self, JitterBuffer, Pop};
+use crate::options::AudioType;
 use crate::spatial::{self, Falloff, Listener};
 use crate::wire::Uuid;
 
@@ -19,7 +20,10 @@ pub type StereoFrame = [f32; FRAME_SAMPLES * 2];
 /// say). The server only forwards speakers in range, so play them centred at a moderate level.
 const UNKNOWN_POSITION_GAIN: f32 = 0.5;
 /// Group voice: no fading with distance.
-const NO_FALLOFF: Falloff = Falloff { full_volume_distance: f64::INFINITY, max_distance: f64::INFINITY };
+const NO_FALLOFF: Falloff = Falloff {
+    full_volume_distance: f64::INFINITY,
+    max_distance: f64::INFINITY,
+};
 /// A speaker counts as talking for this many ticks after their last frame (for the indicator).
 const TALKING_TICKS: u64 = 10;
 /// A speaker silent this long is dropped, freeing their decoder (10 s).
@@ -51,6 +55,7 @@ pub struct Mixer {
     listener: Option<Listener>,
     falloff: Falloff,
     jitter_cfg: jitter::JitterConfig,
+    audio_type: AudioType,
     /// Master output volume (1.0 = unchanged).
     pub volume: f32,
     /// Per-player volume multipliers.
@@ -72,6 +77,7 @@ impl Mixer {
             listener: None,
             falloff: Falloff::with_max(max_distance),
             jitter_cfg: jitter::JitterConfig::default(),
+            audio_type: AudioType::Normal,
             volume: 1.0,
             player_volume: HashMap::new(),
             group_volume: 1.0,
@@ -86,6 +92,20 @@ impl Mixer {
         self.local.extend(samples.iter().copied());
         let excess = self.local.len().saturating_sub(LOCAL_LIMIT);
         self.local.drain(..excess);
+    }
+
+    /// How voices are placed around the listener (`audio_type`).
+    pub fn set_audio_type(&mut self, audio_type: AudioType) {
+        self.audio_type = audio_type;
+    }
+
+    /// Buffering for speakers from now on and for those already heard (`output_buffer_size`
+    /// and `audio_packet_threshold`).
+    pub fn set_buffering(&mut self, output_buffer_size: usize, packet_threshold: usize) {
+        self.jitter_cfg = jitter::JitterConfig::buffered(output_buffer_size, packet_threshold);
+        for s in self.speakers.values_mut() {
+            s.jitter.set_config(self.jitter_cfg);
+        }
     }
 
     pub fn set_max_distance(&mut self, max_distance: f64) {
@@ -121,7 +141,14 @@ impl Mixer {
         self.push_frame(sender, sequence, opus, true, None);
     }
 
-    fn push_frame(&mut self, sender: Uuid, sequence: u64, opus: Vec<u8>, group: bool, range: Option<f64>) {
+    fn push_frame(
+        &mut self,
+        sender: Uuid,
+        sequence: u64,
+        opus: Vec<u8>,
+        group: bool,
+        range: Option<f64>,
+    ) {
         let (cfg, tick) = (self.jitter_cfg, self.tick);
         if self.speakers.len() >= MAX_SPEAKERS && !self.speakers.contains_key(&sender) {
             return;
@@ -145,7 +172,10 @@ impl Mixer {
     pub fn talking(&self) -> Vec<Uuid> {
         self.speakers
             .iter()
-            .filter(|(_, s)| s.last_frame_tick.is_some_and(|t| self.tick.saturating_sub(t) <= TALKING_TICKS))
+            .filter(|(_, s)| {
+                s.last_frame_tick
+                    .is_some_and(|t| self.tick.saturating_sub(t) <= TALKING_TICKS)
+            })
             .map(|(id, _)| *id)
             .collect()
     }
@@ -155,7 +185,9 @@ impl Mixer {
         self.tick += 1;
         let mut out = [0f32; FRAME_SAMPLES * 2];
         let tick = self.tick;
-        self.speakers.retain(|_, s| tick.saturating_sub(s.last_push_tick) < FORGET_TICKS || !s.jitter.is_empty());
+        self.speakers.retain(|_, s| {
+            tick.saturating_sub(s.last_push_tick) < FORGET_TICKS || !s.jitter.is_empty()
+        });
 
         for (id, speaker) in self.speakers.iter_mut() {
             let packet = match speaker.jitter.pop() {
@@ -169,7 +201,9 @@ impl Mixer {
                     Err(_) => continue,
                 }
             }
-            let Ok(pcm) = speaker.decoder.as_mut().unwrap().decode(packet.as_deref()) else { continue };
+            let Ok(pcm) = speaker.decoder.as_mut().unwrap().decode(packet.as_deref()) else {
+                continue;
+            };
             speaker.last_frame_tick = Some(tick);
 
             let falloff = match (speaker.group, speaker.range) {
@@ -177,8 +211,17 @@ impl Mixer {
                 (false, Some(range)) => Falloff::with_max(range),
                 (false, None) => self.falloff,
             };
-            let target = target_gains(self.listener.as_ref(), self.positions.get(id), &falloff);
-            let group = if speaker.group { self.group_volume } else { 1.0 };
+            let target = target_gains(
+                self.listener.as_ref(),
+                self.positions.get(id),
+                &falloff,
+                self.audio_type,
+            );
+            let group = if speaker.group {
+                self.group_volume
+            } else {
+                1.0
+            };
             let scale = self.volume * group * self.player_volume.get(id).copied().unwrap_or(1.0);
             let target = (target.0 * scale, target.1 * scale);
             // Ramp across the frame from the previous gains, so moving or turning doesn't click.
@@ -209,9 +252,14 @@ impl Mixer {
     }
 }
 
-fn target_gains(listener: Option<&Listener>, position: Option<&[f64; 3]>, falloff: &Falloff) -> (f32, f32) {
+fn target_gains(
+    listener: Option<&Listener>,
+    position: Option<&[f64; 3]>,
+    falloff: &Falloff,
+    audio_type: AudioType,
+) -> (f32, f32) {
     match (listener, position) {
-        (Some(l), Some(p)) => spatial::stereo_gains(l, *p, falloff),
+        (Some(l), Some(p)) => spatial::stereo_gains(l, *p, falloff, audio_type),
         _ => {
             let g = UNKNOWN_POSITION_GAIN * std::f32::consts::FRAC_1_SQRT_2;
             (g, g)
@@ -231,7 +279,10 @@ mod tests {
             .map(|f| {
                 let mut frame = [0f32; FRAME_SAMPLES];
                 for (i, s) in frame.iter_mut().enumerate() {
-                    *s = 0.5 * (2.0 * std::f32::consts::PI * 440.0 * (f * FRAME_SAMPLES + i) as f32 / 48_000.0).sin();
+                    *s = 0.5
+                        * (2.0 * std::f32::consts::PI * 440.0 * (f * FRAME_SAMPLES + i) as f32
+                            / 48_000.0)
+                            .sin();
                 }
                 enc.encode(&frame, 1275).unwrap()
             })
@@ -251,12 +302,37 @@ mod tests {
         let mut m = Mixer::new(48.0);
         let alice = Uuid([1; 16]);
         // Facing north: east is to the right.
-        m.set_listener(Some(Listener { pos: [0.0, 64.0, 0.0], yaw_degrees: 180.0 }));
+        m.set_listener(Some(Listener {
+            pos: [0.0, 64.0, 0.0],
+            yaw_degrees: 180.0,
+        }));
         m.set_positions([(alice, [distance, 64.0, 0.0])]);
         for (seq, p) in tone_packets(30).into_iter().enumerate() {
             m.push(alice, seq as u64, p);
         }
         (m, alice)
+    }
+
+    #[test]
+    fn the_audio_type_changes_how_the_east_speaker_is_placed() {
+        let heard = |t: AudioType| {
+            let (mut m, _) = mixer_with_speaker_east(5.0);
+            m.set_audio_type(t);
+            let mut last = m.mix();
+            for _ in 0..10 {
+                last = m.mix();
+            }
+            energy(&last)
+        };
+        let (l, r) = heard(AudioType::Normal);
+        assert!(l < r * 0.01, "normal: nearly all on the right");
+        let (l, r) = heard(AudioType::Reduced);
+        assert!(
+            l > r * 0.03 && l < r * 0.5,
+            "reduced: the left ear still hears some: {l} {r}"
+        );
+        let (l, r) = heard(AudioType::Off);
+        assert!((l - r).abs() < r * 0.01, "off: the same in both ears");
     }
 
     #[test]
@@ -307,7 +383,10 @@ mod tests {
     fn a_group_member_far_away_is_still_heard_in_full() {
         let mut m = Mixer::new(48.0);
         let bob = Uuid([3; 16]);
-        m.set_listener(Some(Listener { pos: [0.0, 64.0, 0.0], yaw_degrees: 180.0 }));
+        m.set_listener(Some(Listener {
+            pos: [0.0, 64.0, 0.0],
+            yaw_degrees: 180.0,
+        }));
         // 200 blocks east: silent as a nearby voice, full as a group voice.
         m.set_positions([(bob, [200.0, 64.0, 0.0])]);
         for (seq, p) in tone_packets(30).into_iter().enumerate() {
@@ -348,16 +427,29 @@ mod tests {
         let heard = |group: bool, group_volume: f32| {
             let mut m = Mixer::new(48.0);
             m.group_volume = group_volume;
-            m.set_listener(Some(Listener { pos: [0.0, 64.0, 0.0], yaw_degrees: 180.0 }));
+            m.set_listener(Some(Listener {
+                pos: [0.0, 64.0, 0.0],
+                yaw_degrees: 180.0,
+            }));
             m.set_positions([(bob, [5.0, 64.0, 0.0])]);
             for (seq, p) in tone_packets(30).into_iter().enumerate() {
-                if group { m.push_group(bob, seq as u64, p) } else { m.push(bob, seq as u64, p) }
+                if group {
+                    m.push_group(bob, seq as u64, p)
+                } else {
+                    m.push(bob, seq as u64, p)
+                }
             }
             (0..10).map(|_| energy(&m.mix()).1).last().unwrap()
         };
-        assert!(heard(true, 0.0) < 1e-6, "a group voice at group volume 0 is silent");
+        assert!(
+            heard(true, 0.0) < 1e-6,
+            "a group voice at group volume 0 is silent"
+        );
         assert!(heard(true, 1.0) > 1.0);
-        assert!(heard(false, 0.0) > 1.0, "a nearby voice ignores the group volume");
+        assert!(
+            heard(false, 0.0) > 1.0,
+            "a nearby voice ignores the group volume"
+        );
     }
 
     #[test]
@@ -366,7 +458,10 @@ mod tests {
         // 30 blocks away: heard when talking (range 48), silent when whispering (range 24).
         let heard = |range: f64| {
             let mut m = Mixer::new(48.0);
-            m.set_listener(Some(Listener { pos: [0.0, 64.0, 0.0], yaw_degrees: 180.0 }));
+            m.set_listener(Some(Listener {
+                pos: [0.0, 64.0, 0.0],
+                yaw_degrees: 180.0,
+            }));
             m.set_positions([(bob, [30.0, 64.0, 0.0])]);
             for (seq, p) in tone_packets(30).into_iter().enumerate() {
                 m.push_ranged(bob, seq as u64, p, range);
@@ -375,7 +470,10 @@ mod tests {
         };
         assert!(heard(48.0) > 0.01, "talking: heard at 30 blocks");
         assert_eq!(heard(24.0), 0.0, "whispering: out of range at 30 blocks");
-        assert!(heard(f64::NAN) > 0.01, "a nonsense range falls back to the mixer's");
+        assert!(
+            heard(f64::NAN) > 0.01,
+            "a nonsense range falls back to the mixer's"
+        );
     }
 
     #[test]

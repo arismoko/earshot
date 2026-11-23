@@ -49,6 +49,8 @@ pub struct Settings {
     pub group_sounds: bool,
     /// Open the sound card. Off only in tests, which have no audio hardware to rely on.
     pub use_audio_devices: bool,
+    /// The delays, buffering and 3D audio type ([crate::options]).
+    pub options: crate::options::Options,
 }
 
 impl Default for Settings {
@@ -63,6 +65,7 @@ impl Default for Settings {
             group_volume: 1.0,
             group_sounds: true,
             use_audio_devices: true,
+            options: Default::default(),
         }
     }
 }
@@ -97,6 +100,8 @@ pub struct Status {
     /// Voice groups on the server, the one we're in, and the last problem joining one.
     pub groups: Vec<GroupInfo>,
     pub my_group: Option<GroupInfo>,
+    /// Every player the server's states named, with their names (online players).
+    pub player_names: Vec<(Uuid, String)>,
     pub group_problem: Option<String>,
     /// UDP from the server by message type ("08x52 02x0"), unreadable packets, and the last problem.
     pub udp_summary: String,
@@ -169,7 +174,10 @@ impl Inner {
 
     /// The microphone this client wants open now, with the queue it fills.
     fn wanted_input(&self) -> Option<InputDevice> {
-        self.audio_devices().0.map(|name| InputDevice { name, queue: self.capture.clone() })
+        self.audio_devices().0.map(|name| InputDevice {
+            name,
+            queue: self.capture.clone(),
+        })
     }
 
     fn reset_capture(&mut self) {
@@ -179,6 +187,24 @@ impl Inner {
         self.level = -127.0;
         self.transmitting = false;
         self.activation = Activation::new(self.settings.mode);
+        self.apply_delays();
+    }
+
+    /// The microphone's hold-over delays, from the options.
+    fn apply_delays(&mut self) {
+        let o = &self.settings.options;
+        self.activation.hold_frames = o.voice_deactivation_delay.max(0) as u32;
+        self.activation.ptt_hold_frames = o.ptt_deactivation_delay.max(0) as u32;
+    }
+
+    /// What the mixer takes from the options: placement and buffering.
+    fn apply_mixer_options(&mut self) {
+        let o = &self.settings.options;
+        self.mixer.set_audio_type(o.audio_type);
+        self.mixer.set_buffering(
+            o.output_buffer_size.max(1) as usize,
+            o.audio_packet_threshold.max(0) as usize,
+        );
     }
 }
 
@@ -241,9 +267,19 @@ impl VoiceClient {
             mic_test: false,
             group_view: None,
         };
-        let shared = Arc::new(Shared { inner: Mutex::new(inner), stop: AtomicBool::new(false), start: Instant::now() });
+        let mut inner = inner;
+        inner.apply_delays();
+        inner.apply_mixer_options();
+        let shared = Arc::new(Shared {
+            inner: Mutex::new(inner),
+            stop: AtomicBool::new(false),
+            start: Instant::now(),
+        });
         let s = shared.clone();
-        let worker = std::thread::Builder::new().name("earshot-voice".into()).spawn(move || worker(s)).ok();
+        let worker = std::thread::Builder::new()
+            .name("earshot-voice".into())
+            .spawn(move || worker(s))
+            .ok();
         Self { shared, worker }
     }
 
@@ -253,18 +289,26 @@ impl VoiceClient {
         let now = self.shared.now();
         let mut inner = self.shared.lock();
         let actions = if channel == plugin::MINECRAFT_REGISTER {
-            inner.session.on_server_register(&plugin::decode_register(data), now)
+            inner
+                .session
+                .on_server_register(&plugin::decode_register(data), now)
         } else {
             match ServerMessage::decode(channel, data) {
-                Some(Ok(ServerMessage::Secret(secret))) => on_secret(&mut inner, secret, game_host, now),
+                Some(Ok(ServerMessage::Secret(secret))) => {
+                    on_secret(&mut inner, secret, game_host, now)
+                }
                 Some(Ok(ServerMessage::State(st))) => {
-                    inner.voice_flags.insert(st.player, (st.disabled, st.disconnected));
+                    inner
+                        .voice_flags
+                        .insert(st.player, (st.disabled, st.disconnected));
                     inner.players.insert(st.player, (st.name, st.group));
                     vec![]
                 }
                 Some(Ok(ServerMessage::States(list))) => {
                     for st in list {
-                        inner.voice_flags.insert(st.player, (st.disabled, st.disconnected));
+                        inner
+                            .voice_flags
+                            .insert(st.player, (st.disabled, st.disconnected));
                         inner.players.insert(st.player, (st.name, st.group));
                     }
                     vec![]
@@ -302,7 +346,13 @@ impl VoiceClient {
 
     /// Once a game tick: where we listen from, where the other players are, and the
     /// push-to-talk and whisper keys.
-    pub fn tick(&self, listener: Option<Listener>, players: Vec<(Uuid, [f64; 3])>, ptt_down: bool, whisper_down: bool) {
+    pub fn tick(
+        &self,
+        listener: Option<Listener>,
+        players: Vec<(Uuid, [f64; 3])>,
+        ptt_down: bool,
+        whisper_down: bool,
+    ) {
         let mut inner = self.shared.lock();
         inner.mixer.set_listener(listener);
         inner.mixer.set_positions(players);
@@ -342,14 +392,23 @@ impl VoiceClient {
 
     /// Makes a group of this type and joins it (`create_group`, captures 06 and 07).
     pub fn create_group(&self, name: &str, password: Option<&str>, kind: plugin::GroupType) {
-        let data = plugin::CreateGroup { name: name.to_string(), password: password.map(str::to_string), kind }.encode();
+        let data = plugin::CreateGroup {
+            name: name.to_string(),
+            password: password.map(str::to_string),
+            kind,
+        }
+        .encode();
         self.send_when_connected(plugin::CREATE_GROUP, data);
     }
 
     /// Joins a group by id (`set_group`, capture 06).
     pub fn join_group(&self, group: Uuid, password: Option<&str>) {
         self.shared.lock().group_problem = None;
-        let data = plugin::SetGroup { group, password: password.map(str::to_string) }.encode();
+        let data = plugin::SetGroup {
+            group,
+            password: password.map(str::to_string),
+        }
+        .encode();
         self.send_when_connected(plugin::SET_GROUP, data);
     }
 
@@ -366,7 +425,11 @@ impl VoiceClient {
     }
 
     pub fn set_player_volume(&self, player: Uuid, volume: f32) {
-        self.shared.lock().mixer.player_volume.insert(player, volume.max(0.0));
+        self.shared
+            .lock()
+            .mixer
+            .player_volume
+            .insert(player, volume.max(0.0));
     }
 
     /// The mic test: while on, the microphone (after its volume and the noise reduction, as
@@ -377,13 +440,17 @@ impl VoiceClient {
 
     pub fn apply_settings(&self, settings: Settings) {
         let mut inner = self.shared.lock();
-        if settings.input_device != inner.settings.input_device || !settings.use_audio_devices && inner.settings.use_audio_devices {
+        if settings.input_device != inner.settings.input_device
+            || !settings.use_audio_devices && inner.settings.use_audio_devices
+        {
             inner.reset_capture();
         }
         inner.activation.mode = settings.mode;
         inner.mixer.volume = settings.output_volume;
         inner.mixer.group_volume = settings.group_volume.max(0.0);
         inner.settings = settings;
+        inner.apply_delays();
+        inner.apply_mixer_options();
     }
 
     pub fn status(&self) -> Status {
@@ -399,9 +466,19 @@ impl VoiceClient {
         let connection = match (&inner.session.phase, &inner.target) {
             (Phase::Idle | Phase::Requested { .. } | Phase::Connected { .. }, _) => connection,
             (_, target) => {
-                let to = target.as_ref().map(|(h, p)| format!("{h}:{p}")).unwrap_or_else(|| "no address".into());
-                let err = inner.udp_error.as_ref().map(|e| format!(", error: {e}")).unwrap_or_default();
-                format!("{connection} [UDP {to}: sent {}, got {}{err}]", inner.udp_sent, inner.udp_received)
+                let to = target
+                    .as_ref()
+                    .map(|(h, p)| format!("{h}:{p}"))
+                    .unwrap_or_else(|| "no address".into());
+                let err = inner
+                    .udp_error
+                    .as_ref()
+                    .map(|e| format!(", error: {e}"))
+                    .unwrap_or_default();
+                format!(
+                    "{connection} [UDP {to}: sent {}, got {}{err}]",
+                    inner.udp_sent, inner.udp_received
+                )
             }
         };
         Status {
@@ -411,8 +488,18 @@ impl VoiceClient {
             whispering: inner.transmitting && inner.whisper_down,
             talking: inner.mixer.talking(),
             me: inner.session.player(),
-            voice_off: inner.voice_flags.iter().filter(|(_, f)| f.0).map(|(id, _)| *id).collect(),
-            has_voice: inner.voice_flags.iter().filter(|(_, f)| !f.1).map(|(id, _)| *id).collect(),
+            voice_off: inner
+                .voice_flags
+                .iter()
+                .filter(|(_, f)| f.0)
+                .map(|(id, _)| *id)
+                .collect(),
+            has_voice: inner
+                .voice_flags
+                .iter()
+                .filter(|(_, f)| !f.1)
+                .map(|(id, _)| *id)
+                .collect(),
             muted: inner.muted,
             deafened: inner.deafened,
             disabled: inner.session.disabled,
@@ -423,7 +510,15 @@ impl VoiceClient {
             voice_frames_received: inner.voice_frames_received,
             udp_summary: udp_summary(&inner),
             groups: inner.groups.iter().map(|g| group_info(&inner, g)).collect(),
-            my_group: inner.my_group.and_then(|id| inner.groups.iter().find(|g| g.id == id)).map(|g| group_info(&inner, g)),
+            player_names: inner
+                .players
+                .iter()
+                .map(|(id, (name, _))| (*id, name.clone()))
+                .collect(),
+            my_group: inner
+                .my_group
+                .and_then(|id| inner.groups.iter().find(|g| g.id == id))
+                .map(|g| group_info(&inner, g)),
             group_problem: inner.group_problem.clone(),
         }
     }
@@ -449,6 +544,7 @@ impl VoiceClient {
         inner.mixer.volume = inner.settings.output_volume;
         inner.mixer.group_volume = inner.settings.group_volume.max(0.0);
         inner.mixer.deafened = inner.deafened || inner.session.disabled;
+        inner.apply_mixer_options();
     }
 }
 
@@ -540,8 +636,14 @@ fn run_actions(inner: &mut Inner, actions: Vec<Action>) {
 }
 
 fn send_udp(inner: &mut Inner, msg: &Message) {
-    let (Some(socket), Some(key), Some(me)) = (&inner.socket, inner.session.key(), inner.session.player()) else { return };
-    let result = udp::seal_to_server(key, &me, msg).map_err(|e| e.to_string()).and_then(|packet| socket.send(&packet).map_err(|e| e.to_string()));
+    let (Some(socket), Some(key), Some(me)) =
+        (&inner.socket, inner.session.key(), inner.session.player())
+    else {
+        return;
+    };
+    let result = udp::seal_to_server(key, &me, msg)
+        .map_err(|e| e.to_string())
+        .and_then(|packet| socket.send(&packet).map_err(|e| e.to_string()));
     match result {
         Ok(_) => inner.udp_sent += 1,
         Err(e) => {
@@ -561,7 +663,13 @@ fn group_info(inner: &Inner, g: &plugin::Group) -> GroupInfo {
         .map(|(id, (name, _))| (*id, name.clone()))
         .collect();
     members.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-    GroupInfo { id: g.id, name: g.name.clone(), has_password: g.has_password, kind: g.kind, members }
+    GroupInfo {
+        id: g.id,
+        name: g.name.clone(),
+        has_password: g.has_password,
+        kind: g.kind,
+        members,
+    }
 }
 
 /// "got 08x52 02x3, 1 unreadable (last: …)" for the settings page.
@@ -573,7 +681,14 @@ fn udp_summary(inner: &Inner) -> String {
         .filter(|(_, n)| **n > 0)
         .map(|(t, n)| format!("{t:02x}x{n}"))
         .collect();
-    let mut s = format!("UDP got {}", if types.is_empty() { "nothing".to_string() } else { types.join(" ") });
+    let mut s = format!(
+        "UDP got {}",
+        if types.is_empty() {
+            "nothing".to_string()
+        } else {
+            types.join(" ")
+        }
+    );
     if inner.udp_unreadable > 0 {
         s.push_str(&format!(", {} unreadable", inner.udp_unreadable));
     }
@@ -598,10 +713,16 @@ fn open_socket(host: &str, port: u16) -> Result<UdpSocket, String> {
         .map_err(|e| format!("can't find voice server {host}: {e}"))?
         .next()
         .ok_or_else(|| format!("can't find voice server {host}"))?;
-    let local: SocketAddr = if addr.is_ipv4() { "0.0.0.0:0".parse().unwrap() } else { "[::]:0".parse().unwrap() };
+    let local: SocketAddr = if addr.is_ipv4() {
+        "0.0.0.0:0".parse().unwrap()
+    } else {
+        "[::]:0".parse().unwrap()
+    };
     let socket = UdpSocket::bind(local).map_err(|e| e.to_string())?;
     socket.connect(addr).map_err(|e| e.to_string())?;
-    socket.set_read_timeout(Some(Duration::from_millis(5))).map_err(|e| e.to_string())?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(5)))
+        .map_err(|e| e.to_string())?;
     Ok(socket)
 }
 
@@ -619,7 +740,8 @@ impl PartialEq for InputDevice {
 fn start_audio(shared: &Arc<Shared>, playback: PlaybackQueue) -> (AudioIo, AudioIo) {
     let (input, input_gate, input_status) = (shared.clone(), shared.clone(), shared.clone());
     let (output, output_gate, output_status) = (shared.clone(), shared.clone(), shared.clone());
-    let play = |stream: &cpal::Stream| cpal::traits::StreamTrait::play(stream).map_err(|e| e.to_string());
+    let play =
+        |stream: &cpal::Stream| cpal::traits::StreamTrait::play(stream).map_err(|e| e.to_string());
     (
         AudioIo::start(
             "earshot-input",
@@ -657,20 +779,24 @@ fn worker(shared: Arc<Shared>) {
         // The socket first: made once we know where the voice server is.
         let socket = {
             let mut inner = shared.lock();
-            if inner.socket.is_none() && matches!(inner.session.phase, Phase::Authenticating { .. }) {
+            if inner.socket.is_none() && matches!(inner.session.phase, Phase::Authenticating { .. })
+            {
                 if let Some((host, port)) = inner.target.clone() {
                     drop(inner);
                     let opened = open_socket(&host, port);
                     inner = shared.lock();
                     match opened {
                         Ok(s) => {
-                            eprintln!("[earshot] voice server: udp {host}:{port}, from {:?}", s.local_addr());
+                            eprintln!(
+                                "[earshot] voice server: udp {host}:{port}, from {:?}",
+                                s.local_addr()
+                            );
                             inner.socket = Some(s);
                             // Don't wait for the next retry: log in now.
-                            let auth = inner
-                                .session
-                                .secret()
-                                .map(|s| Message::Authenticate { player: s.player, secret: s.secret });
+                            let auth = inner.session.secret().map(|s| Message::Authenticate {
+                                player: s.player,
+                                secret: s.secret,
+                            });
                             if let Some(auth) = auth {
                                 send_udp(&mut inner, &auth);
                             }
@@ -696,11 +822,17 @@ fn worker(shared: Arc<Shared>) {
             while Instant::now() < batch_end {
                 let Ok(n) = socket.recv(&mut buf) else { break };
                 let mut inner = shared.lock();
-                let Some(key) = inner.session.key().cloned() else { break };
+                let Some(key) = inner.session.key().cloned() else {
+                    break;
+                };
                 inner.udp_received += 1;
                 let decoded = udp::open_raw_from_server(&key, &buf[..n])
                     .map_err(|e| format!("{e} ({n} bytes, starts {})", short_hex(&buf[..n])))
-                    .and_then(|plain| Message::decode(&plain).map_err(|e| format!("can't read reply: {e} (plain {})", short_hex(&plain))));
+                    .and_then(|plain| {
+                        Message::decode(&plain).map_err(|e| {
+                            format!("can't read reply: {e} (plain {})", short_hex(&plain))
+                        })
+                    });
                 match decoded {
                     Ok(msg) => {
                         let ty = msg.encode()[0];
@@ -708,7 +840,12 @@ fn worker(shared: Arc<Shared>) {
                         if let Message::PlayerSound(s) = &msg {
                             inner.voice_frames_received += 1;
                             // Each frame names its range: shorter for a whisper (capture 07).
-                            inner.mixer.push_ranged(s.sender, s.sequence, s.opus.clone(), s.distance as f64);
+                            inner.mixer.push_ranged(
+                                s.sender,
+                                s.sequence,
+                                s.opus.clone(),
+                                s.distance as f64,
+                            );
                         }
                         if let Message::GroupSound(s) = &msg {
                             inner.voice_frames_received += 1;
@@ -739,7 +876,9 @@ fn worker(shared: Arc<Shared>) {
         // Microphone: one Opus frame per 960 captured samples.
         loop {
             let frame: [f32; FRAME_SAMPLES] = {
-                let Ok(mut q) = inner.capture.lock() else { break };
+                let Ok(mut q) = inner.capture.lock() else {
+                    break;
+                };
                 if q.len() < FRAME_SAMPLES {
                     break;
                 }
@@ -795,8 +934,14 @@ fn send_mic_frame(inner: &mut Inner, mut frame: [f32; FRAME_SAMPLES]) {
     if !send {
         return;
     }
-    let mtu = inner.session.secret().map(|s| s.mtu.max(1) as usize).unwrap_or(1275);
-    let Some(encoder) = inner.encoder.as_mut() else { return };
+    let mtu = inner
+        .session
+        .secret()
+        .map(|s| s.mtu.max(1) as usize)
+        .unwrap_or(1275);
+    let Some(encoder) = inner.encoder.as_mut() else {
+        return;
+    };
     let opus = match encoder.encode(&frame, mtu) {
         Ok(p) => p,
         Err(e) => {
@@ -805,7 +950,11 @@ fn send_mic_frame(inner: &mut Inner, mut frame: [f32; FRAME_SAMPLES]) {
         }
     };
     // The last byte: 1 while whispering, 0 otherwise (capture 07).
-    let msg = Message::Mic(MicFrame { opus, sequence: inner.sequence, flag: inner.whisper_down as u8 });
+    let msg = Message::Mic(MicFrame {
+        opus,
+        sequence: inner.sequence,
+        flag: inner.whisper_down as u8,
+    });
     inner.sequence += 1;
     inner.mic_frames_sent += 1;
     send_udp(inner, &msg);
@@ -832,7 +981,10 @@ mod tests {
 
     #[test]
     fn audio_devices_follow_mute_and_voice_chat() {
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
         let mut inner = client.shared.lock();
         inner.target = Some(("127.0.0.1".into(), 1));
         assert_eq!(inner.audio_devices(), (None, None));
@@ -861,7 +1013,10 @@ mod tests {
 
     #[test]
     fn a_microphone_opened_as_the_player_mutes_is_never_started() {
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
         let mut inner = client.shared.lock();
         inner.target = Some(("127.0.0.1".into(), 1));
         inner.settings.use_audio_devices = true;
@@ -879,16 +1034,25 @@ mod tests {
         // Unmuted again with a fresh queue: the stream opened for the old one isn't started either.
         client.set_muted(false);
         let mut inner = client.shared.lock();
-        assert_eq!(audio::start_if_wanted(&opening, inner.wanted_input(), || Ok(())), Ok(false));
+        assert_eq!(
+            audio::start_if_wanted(&opening, inner.wanted_input(), || Ok(())),
+            Ok(false)
+        );
         let fresh = inner.wanted_input().unwrap();
-        assert_eq!(audio::start_if_wanted(&fresh, inner.wanted_input(), || Ok(())), Ok(true));
+        assert_eq!(
+            audio::start_if_wanted(&fresh, inner.wanted_input(), || Ok(())),
+            Ok(true)
+        );
         inner.settings.use_audio_devices = false;
         inner.target = None;
     }
 
     #[test]
     fn rapid_unmute_and_reenable_never_reuse_the_old_capture_queue() {
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
         let before_mute = client.shared.lock().capture.clone();
         client.set_muted(true);
         before_mute.lock().unwrap().push_back(1.0);
@@ -906,16 +1070,25 @@ mod tests {
 
     #[test]
     fn dropping_a_client_stops_its_worker_promptly() {
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
         let started = Instant::now();
         drop(client);
-        assert!(started.elapsed() < STOP_WAIT, "the worker saw `stop` and was joined");
+        assert!(
+            started.elapsed() < STOP_WAIT,
+            "the worker saw `stop` and was joined"
+        );
     }
 
     #[test]
     fn dropping_a_client_whose_worker_never_ends_does_not_hang_or_panic() {
         // As at process exit, where the OS has ended the worker: a handle that never finishes.
-        let mut client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let mut client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
         let (_keep, wait) = std::sync::mpsc::channel::<()>();
         let stuck = std::thread::spawn(move || {
             let _ = wait.recv();
@@ -931,18 +1104,30 @@ mod tests {
     #[test]
     fn connects_to_a_fake_voice_server_and_answers_keep_alives() {
         let server = UdpSocket::bind("127.0.0.1:0").unwrap();
-        server.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let port = server.local_addr().unwrap().port();
         let me = Uuid([7; 16]);
         let key_bytes = [9u8; 16];
         let key = VoiceKey::new(&key_bytes);
 
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
 
         // 1. The server's register makes the client ask for the secret.
-        client.on_plugin(plugin::MINECRAFT_REGISTER, &plugin::encode_register(plugin::SERVER_RECEIVES), "127.0.0.1");
+        client.on_plugin(
+            plugin::MINECRAFT_REGISTER,
+            &plugin::encode_register(plugin::SERVER_RECEIVES),
+            "127.0.0.1",
+        );
         let out = client.take_outgoing();
-        assert_eq!(out.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [plugin::MINECRAFT_REGISTER, plugin::REQUEST_SECRET]);
+        assert_eq!(
+            out.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+            [plugin::MINECRAFT_REGISTER, plugin::REQUEST_SECRET]
+        );
 
         // 2. The secret: voice host left empty, so the joined host and the port are used.
         let secret = Secret {
@@ -964,8 +1149,19 @@ mod tests {
         let (n, from) = server.recv_from(&mut buf).unwrap();
         let (sender, msg) = udp::open_from_client(&key, &buf[..n]).unwrap();
         assert_eq!(sender, me);
-        assert_eq!(msg, Message::Authenticate { player: me, secret: key_bytes });
-        server.send_to(&udp::seal_to_client(&key, &Message::AuthenticateAck).unwrap(), from).unwrap();
+        assert_eq!(
+            msg,
+            Message::Authenticate {
+                player: me,
+                secret: key_bytes
+            }
+        );
+        server
+            .send_to(
+                &udp::seal_to_client(&key, &Message::AuthenticateAck).unwrap(),
+                from,
+            )
+            .unwrap();
 
         // 4. Connection check, then connected.
         loop {
@@ -974,12 +1170,22 @@ mod tests {
                 break;
             }
         }
-        server.send_to(&udp::seal_to_client(&key, &Message::ConnectionCheckAck).unwrap(), from).unwrap();
+        server
+            .send_to(
+                &udp::seal_to_client(&key, &Message::ConnectionCheckAck).unwrap(),
+                from,
+            )
+            .unwrap();
         wait_for("connected", || client.status().connected);
         assert_eq!(client.take_outgoing(), [(plugin::UPDATE_STATE, vec![0])]);
 
         // 5. A keep-alive is answered.
-        server.send_to(&udp::seal_to_client(&key, &Message::KeepAlive).unwrap(), from).unwrap();
+        server
+            .send_to(
+                &udp::seal_to_client(&key, &Message::KeepAlive).unwrap(),
+                from,
+            )
+            .unwrap();
         loop {
             let (n, _) = server.recv_from(&mut buf).unwrap();
             if udp::open_from_client(&key, &buf[..n]).unwrap().1 == Message::KeepAlive {
@@ -1000,7 +1206,9 @@ mod tests {
                 distance: 48.0,
                 flag: 0,
             });
-            server.send_to(&udp::seal_to_client(&key, &sound).unwrap(), from).unwrap();
+            server
+                .send_to(&udp::seal_to_client(&key, &sound).unwrap(), from)
+                .unwrap();
         }
         wait_for("alice talking", || client.status().talking.contains(&alice));
 
@@ -1016,10 +1224,17 @@ mod tests {
     #[test]
     fn tracks_groups_from_the_servers_messages() {
         use crate::wire::from_hex;
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
         let group = Uuid::parse("453d1ee3-0610-47f2-bfb2-27f017fc5782").unwrap();
         // Capture 06, 511.20 s onwards: the group appears, NullPort404 is in it, then we join.
-        client.on_plugin(plugin::ADD_GROUP, &from_hex("453d1ee3061047f2bfb227f017fc5782 0c 5465737450617373776f7264 01 00000000"), "h");
+        client.on_plugin(
+            plugin::ADD_GROUP,
+            &from_hex("453d1ee3061047f2bfb227f017fc5782 0c 5465737450617373776f7264 01 00000000"),
+            "h",
+        );
         client.on_plugin(
             plugin::STATE,
             &from_hex("0000 c5c602ae651d38579a04b3e776be1219 0b 4e756c6c506f7274343034 01 453d1ee3061047f2bfb227f017fc5782"),
@@ -1027,16 +1242,33 @@ mod tests {
         );
         let s = client.status();
         assert_eq!(s.groups.len(), 1);
-        assert_eq!((s.groups[0].name.as_str(), s.groups[0].has_password), ("TestPassword", true));
-        assert_eq!(s.groups[0].members, [(Uuid::parse("c5c602ae-651d-3857-9a04-b3e776be1219").unwrap(), "NullPort404".to_string())]);
+        assert_eq!(
+            (s.groups[0].name.as_str(), s.groups[0].has_password),
+            ("TestPassword", true)
+        );
+        assert_eq!(
+            s.groups[0].members,
+            [(
+                Uuid::parse("c5c602ae-651d-3857-9a04-b3e776be1219").unwrap(),
+                "NullPort404".to_string()
+            )]
+        );
         assert!(s.my_group.is_none());
 
-        client.on_plugin(plugin::JOINED_GROUP, &from_hex("01 453d1ee3061047f2bfb227f017fc5782 00"), "h");
+        client.on_plugin(
+            plugin::JOINED_GROUP,
+            &from_hex("01 453d1ee3061047f2bfb227f017fc5782 00"),
+            "h",
+        );
         assert_eq!(client.status().my_group.map(|g| g.id), Some(group));
 
         // Leaving: joined_group 00 00, then the group goes away.
         client.on_plugin(plugin::JOINED_GROUP, &from_hex("0000"), "h");
-        client.on_plugin(plugin::REMOVE_GROUP, &from_hex("453d1ee3061047f2bfb227f017fc5782"), "h");
+        client.on_plugin(
+            plugin::REMOVE_GROUP,
+            &from_hex("453d1ee3061047f2bfb227f017fc5782"),
+            "h",
+        );
         let s = client.status();
         assert!(s.my_group.is_none() && s.groups.is_empty());
 
@@ -1047,8 +1279,15 @@ mod tests {
 
     #[test]
     fn ignores_servers_without_voice() {
-        let client = VoiceClient::new(Settings { use_audio_devices: false, ..Settings::default() });
-        client.on_plugin(plugin::MINECRAFT_REGISTER, b"minecraft:brand", "example.test");
+        let client = VoiceClient::new(Settings {
+            use_audio_devices: false,
+            ..Settings::default()
+        });
+        client.on_plugin(
+            plugin::MINECRAFT_REGISTER,
+            b"minecraft:brand",
+            "example.test",
+        );
         client.on_plugin("other:thing", &[1, 2, 3], "example.test");
         assert!(client.take_outgoing().is_empty());
         assert_eq!(client.status().connection, "no voice server");
