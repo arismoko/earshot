@@ -1,10 +1,12 @@
 <p align="center"><img src="icon.png" width="128" alt="Earshot icon"></p>
 
-# Earshot (Horizon mod)
+# Earshot (Sunrise mod)
 
-Proximity voice chat for [Horizon](https://playhorizon.dev/), the Rust rewrite of Minecraft: Java Edition 26.3.
+Proximity voice chat for [Sunrise](https://playsunrise.net), the Rust rewrite of Minecraft: Java Edition 26.3.
 Talk to the players near you on servers that run **Simple Voice Chat**: with Java players using Simple Voice Chat,
-and with other Horizon players using Earshot.
+and with other Sunrise players using Earshot.
+
+A port of selfmonoraque5's [Earshot](https://github.com/selfmonoraque5/earshot) for Horizon to Sunrise's mod API, by arismoko.
 
 > Earshot is an independent project, **not affiliated with or endorsed by Simple Voice Chat** or its author.
 > It contains no Simple Voice Chat code or assets. Its protocol support was worked out only from our own
@@ -68,53 +70,39 @@ Earshot sends microphone audio only over a connected voice session when voice ch
 and push-to-talk, whisper, or voice activation is active. The mic test plays back locally and does not start
 transmission on its own.
 
-**This version does not host voice on Horizon dedicated servers.** It can still join servers running Simple Voice Chat.
+**This version does not host voice on dedicated servers.** It can still join servers running Simple Voice Chat.
 Earshot 1.x could host voice on a dedicated server and listened on UDP port 24454 on all interfaces by default.
 
 ## Install
 
-Made for Horizon **Nightly 2026-11-21 · f037744**.
-It uses only the mod API, so the launcher also builds it on later Horizon builds where nothing it uses
-changed.
+Made for Sunrise Dev build `ebd2d226`. It uses only the mod API, so the launcher also builds it on later Sunrise
+builds where nothing it uses changed.
 
-From GitHub:
+From the Sunrise registry: open **Mods** in the launcher, find **Earshot**, and choose **Install**. The launcher
+builds it on your computer from its signed source.
 
-1. Download `earshot-2.0.7.hmod` from the [latest release](https://github.com/selfmonoraque5/earshot/releases/latest).
-2. Put it in the `horizon-native-mods` folder of your game folder, not in `mods`. On Windows that is
-   `%APPDATA%\horizon\horizon-native-mods`.
-3. In the launcher, open the Mods page and click **Build** (the first build downloads the mod SDK and takes a few
-   minutes). After a build the launcher can look stuck for a while as it cleans its cache: let it finish.
-4. When it says **Up to date**, play.
+To build a local copy: `cargo sunrise-mod build` in this folder.
 
-From the Horizon registry, open **Mods**, find **Earshot**, and choose **Install**.
-
-To build a local copy: `horizon-launcher native-build <this folder> --instance <instance> --trust-native-code`.
-
-Earshot 2.0 is made for Horizon's mod API. Its menu settings and player volumes are kept in `client.txt` in the
-game's `horizon-mod-data/earshot/` folder, so they start from the defaults again once: the 1.x settings files aren't
-read.
+Earshot keeps its menu settings and player volumes in `client.txt` in the game's mod data folder for `earshot`.
 
 ## Compatibility
 
-A native mod on Horizon's mod API (`horizon-mod.toml`, `[native]`). Everything on the client goes through the mod
+A native mod on Sunrise's mod API (`sunrise-mod.toml`, `[native]`). Everything on the client goes through the mod
 API's hooks: the server's packets (`client_packet`), chat lines (`client_chat_received`), the HUD
 (`render_gui_post`), the name tag icons (`render_player_post`), the voice menu (a mod screen and the screen hooks),
-the keys and the settings. It patches no game function, so the launcher also builds it on later Horizon builds
-where nothing it uses changed.
+the keys (registered key mappings) and the settings. It patches no game function.
 
-**Tested on Windows.** macOS should work but is untested. On Linux the launcher refuses it: Earshot's audio library (cpal) uses ALSA there,
-which the game links too, and a mod may not link a second copy. A Linux version is being worked on.
+Earshot's audio library (cpal) uses ALSA on Linux, CoreAudio on macOS and WASAPI on Windows; the mod brings its own
+copy of these bindings.
 
-The voice server for Horizon dedicated servers needs a hook the mod API doesn't have yet (a player's custom payloads
-on the server); it used a game patch that stopped compiling after Horizon's gameplay split
-([horizon-rust/horizon#18462](https://github.com/horizon-rust/horizon/issues/18462), since fixed in the launcher), so it
-is off in this version and comes back once that patch is tested again.
+The voice server for dedicated servers needs a hook the mod API doesn't have yet (a player's custom payloads on the
+server), so hosting is off in this version.
 
 ## How it works
 
 | Path | What |
 |---|---|
-| `horizon-mod.toml` | Mod manifest and Horizon build requirements |
+| `sunrise-mod.toml` | Mod manifest and Sunrise build requirements |
 | `src/lib.rs` | The hooks |
 | `src/client.rs` | The voice client between hooks: keys, positions, the HUD, the name tag icons, the voice menu and its settings |
 | `src/server.rs` | Dedicated-server voice code and settings. Hosting is disabled in this release. |
@@ -129,7 +117,7 @@ cargo test --workspace
 
 ## Dependencies and licenses
 
-Shipped in the mod (Horizon only allows crates already in its own `Cargo.lock`):
+Shipped in the mod, pinned in its own `Cargo.lock`:
 
 | Dependency | Version | License | How it's used |
 |---|---|---|---|
@@ -150,7 +138,7 @@ Shipped in the mod (Horizon only allows crates already in its own `Cargo.lock`):
 
 From `cargo tree -p earshot-core -e normal --target all` and `cargo metadata`, in this repository's own build. All are
 permissive (MIT, Apache-2.0, BSD-2/3-Clause, Zlib, Unlicense or Unicode-3.0); where a crate offers a choice, Earshot uses
-it under MIT or Apache-2.0. When Horizon builds the mod, it uses the versions in Horizon's own `Cargo.lock`.
+it under MIT or Apache-2.0. The launcher builds the mod with the versions in this `Cargo.lock`.
 
 | Crate | Version | License |
 |---|---|---|
@@ -269,4 +257,4 @@ it under MIT or Apache-2.0. When Horizon builds the mod, it uses the versions in
 
 ## License
 
-Earshot's own code is MIT ([LICENSE](LICENSE)). The vendored opus-rs keeps its BSD-3-Clause license.
+Earshot's own code is MIT ([LICENSE](LICENSE)), © selfmonoraque5; the Sunrise port is by arismoko under the same license. The vendored opus-rs keeps its BSD-3-Clause license.

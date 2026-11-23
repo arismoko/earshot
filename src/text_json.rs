@@ -1,8 +1,8 @@
 //! Chat lines between the mod API's `Text` and the JSON components `earshot_core::chat`
 //! rewrites. Only what voice chat lines use goes across: literal text, translations
 //! with their arguments, children, colours, decorations and click actions. Hover text is
-//! left out: `cargo horizon-mod` reads any use of `TextHover::Text` as building
-//! `text::Text`, which made the launcher refuse Earshot on every later Horizon build.
+//! left out: `cargo sunrise-mod` reads any use of `TextHover::Text` as building
+//! `text::Text`, which made the launcher refuse Earshot on every later game build.
 //! Anything else (scores, selectors, NBT, objects) becomes plain text, which a voice
 //! chat line never holds.
 use mod_api::Text;
@@ -16,13 +16,20 @@ pub fn to_json(text: &Text) -> Value {
         TextContent::Literal(s) => {
             o.insert("text".into(), json!(s));
         }
-        TextContent::Translatable { key, fallback, arguments } => {
+        TextContent::Translatable {
+            key,
+            fallback,
+            arguments,
+        } => {
             o.insert("translate".into(), json!(key));
             if let Some(f) = fallback {
                 o.insert("fallback".into(), json!(f));
             }
             if !arguments.is_empty() {
-                o.insert("with".into(), Value::Array(arguments.iter().map(to_json).collect()));
+                o.insert(
+                    "with".into(),
+                    Value::Array(arguments.iter().map(to_json).collect()),
+                );
             }
         }
         _ => {
@@ -31,7 +38,10 @@ pub fn to_json(text: &Text) -> Value {
     }
     style_to_json(&text.style, &mut o);
     if !text.children.is_empty() {
-        o.insert("extra".into(), Value::Array(text.children.iter().map(to_json).collect()));
+        o.insert(
+            "extra".into(),
+            Value::Array(text.children.iter().map(to_json).collect()),
+        );
     }
     Value::Object(o)
 }
@@ -64,7 +74,10 @@ fn style_to_json(style: &TextStyle, o: &mut Map<String, Value>) {
             _ => ("", "", Value::Null),
         };
         if !action.is_empty() {
-            o.insert("click_event".into(), json!({ "action": action, field: value }));
+            o.insert(
+                "click_event".into(),
+                json!({ "action": action, field: value }),
+            );
         }
     }
 }
@@ -76,7 +89,10 @@ pub fn from_json(value: &Value) -> Text {
         Value::String(s) => Text::literal(s.as_str()),
         Value::Array(list) => {
             let mut iter = list.iter();
-            let mut first = iter.next().map(from_json).unwrap_or_else(|| Text::literal(""));
+            let mut first = iter
+                .next()
+                .map(from_json)
+                .unwrap_or_else(|| Text::literal(""));
             first.children.extend(iter.map(from_json));
             first
         }
@@ -115,17 +131,27 @@ fn object_to_text(o: &Map<String, Value>) -> Text {
     style.underlined = flag("underlined");
     style.strikethrough = flag("strikethrough");
     style.obfuscated = flag("obfuscated");
-    style.insertion = o.get("insertion").and_then(Value::as_str).map(str::to_owned);
+    style.insertion = o
+        .get("insertion")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let click = o.get("click_event").or_else(|| o.get("clickEvent"));
     style.click = click.and_then(Value::as_object).and_then(|c| {
         let action = c.get("action")?.as_str()?;
-        let s = |k: &str| c.get(k).or_else(|| c.get("value")).and_then(Value::as_str).map(str::to_owned);
+        let s = |k: &str| {
+            c.get(k)
+                .or_else(|| c.get("value"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
         Some(match action {
             "run_command" => TextClick::RunCommand(s("command")?),
             "suggest_command" => TextClick::SuggestCommand(s("command")?),
             "open_url" => TextClick::OpenUrl(s("url")?),
             "copy_to_clipboard" => TextClick::CopyToClipboard(s("value")?),
-            "change_page" => TextClick::ChangePage(c.get("page").or_else(|| c.get("value"))?.as_i64()? as i32),
+            "change_page" => {
+                TextClick::ChangePage(c.get("page").or_else(|| c.get("value"))?.as_i64()? as i32)
+            }
             _ => return None,
         })
     });
@@ -161,14 +187,20 @@ mod tests {
         assert_eq!(key, "message.voicechat.invite");
         assert_eq!(arguments.len(), 3);
         assert_eq!(arguments[1].style.color.as_deref(), Some("gray"));
-        assert_eq!(arguments[2].style.click, Some(TextClick::RunCommand("/voicechat join 1234".into())));
+        assert_eq!(
+            arguments[2].style.click,
+            Some(TextClick::RunCommand("/voicechat join 1234".into()))
+        );
         // Hover text doesn't go across (see the module comment): the join button keeps its click.
         assert_eq!(arguments[2].style.hover, None);
         // And back: what earshot_core::chat reads.
         let back = to_json(&text);
         assert_eq!(back["translate"], "message.voicechat.invite");
         assert_eq!(back["with"][0]["text"], "muhnip");
-        assert_eq!(back["with"][2]["click_event"]["command"], "/voicechat join 1234");
+        assert_eq!(
+            back["with"][2]["click_event"]["command"],
+            "/voicechat join 1234"
+        );
         assert!(back["with"][2].get("hover_event").is_none());
     }
 
@@ -178,6 +210,9 @@ mod tests {
         assert_eq!(t.content, TextContent::Literal("a".into()));
         assert_eq!(t.children.len(), 1);
         assert_eq!(t.children[0].style.bold, Some(true));
-        assert_eq!(from_json(&json!(7)).content, TextContent::Literal("7".into()));
+        assert_eq!(
+            from_json(&json!(7)).content,
+            TextContent::Literal("7".into())
+        );
     }
 }

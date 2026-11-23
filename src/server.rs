@@ -1,8 +1,8 @@
-//! Earshot on a Horizon dedicated server (only: not single player's server thread, nor a
+//! Earshot on a dedicated server (only: not single player's server thread, nor a
 //! world opened to LAN): an SVC-compatible voice server ([`earshot_core::server`]), so
 //! Earshot players and Java players with Simple Voice Chat can talk there. Its settings are
 //! `key=value` lines in `server.txt` in the server's mod data folder
-//! (`horizon-mod-data/earshot/`): `server_port` (24454), `voice_host` (what clients connect
+//! (the mod data folder for `earshot`): `server_port` (24454), `voice_host` (what clients connect
 //! to; empty = the address they joined), `max_distance` (48), `whisper_distance` (half of
 //! `max_distance`) and `server_voice` (`false` turns it off).
 //!
@@ -46,17 +46,28 @@ fn parse(text: &str) -> HashMap<String, String> {
 
 /// The voice server's settings from `lines`; None when voice is turned off.
 pub fn config(lines: &HashMap<String, String>) -> Option<ServerConfig> {
-    let get = |k: &str| lines.get(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let get = |k: &str| {
+        lines
+            .get(k)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
     if get("server_voice").as_deref() == Some("false") {
         return None;
     }
-    let port: u16 = get("server_port").and_then(|v| v.parse().ok()).unwrap_or(24454);
-    let max_distance: f64 = get("max_distance").and_then(|v| v.parse().ok()).unwrap_or(48.0);
+    let port: u16 = get("server_port")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24454);
+    let max_distance: f64 = get("max_distance")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(48.0);
     Some(ServerConfig {
         bind: std::net::SocketAddr::from(([0, 0, 0, 0], port)),
         max_distance,
         // Half the voice distance unless set (capture 07: 24 of 48 on SVC's defaults).
-        whisper_distance: get("whisper_distance").and_then(|v| v.parse().ok()).unwrap_or(max_distance / 2.0),
+        whisper_distance: get("whisper_distance")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(max_distance / 2.0),
         voice_host: get("voice_host").unwrap_or_default(),
         ..Default::default()
     })
@@ -67,7 +78,9 @@ fn start(side: &mut ServerSide) {
         return;
     }
     // Before the first tick read the settings, nothing starts.
-    let Some(settings) = side.settings.as_ref() else { return };
+    let Some(settings) = side.settings.as_ref() else {
+        return;
+    };
     let Some(config) = config(settings) else {
         side.failed = true;
         return;
@@ -105,12 +118,17 @@ pub fn tick(host: &mut dyn ServerHost) {
         .filter_map(|p| {
             let entity = p.entity();
             let pos = entity.position(reads)?;
-            let dimension = entity.level(reads).and_then(|l| l.dimension().id(reads)).unwrap_or_default();
-            Some((Uuid::from_u128(p.uuid()), dimension, pos))
+            let dimension = entity
+                .level(reads)
+                .and_then(|l| l.dimension().id(reads))
+                .unwrap_or_default();
+            Some((Uuid::from_u128(p.uuid()), dimension.to_owned(), pos))
         })
         .collect();
     with_server(|side| {
-        let Some(voice) = side.voice.as_ref() else { return };
+        let Some(voice) = side.voice.as_ref() else {
+            return;
+        };
         let empty = players.is_empty();
         voice.set_players(players);
         if empty {
@@ -128,11 +146,19 @@ pub struct Replies {
 
 /// A play packet from player `uuid` (`name`) on connection `conn`, with its custom
 /// payload's channel and bytes if it is one, on a dedicated server.
-pub fn on_packet(conn: u32, uuid: u128, name: &str, payload: Option<(&str, &[u8])>) -> Option<Replies> {
+pub fn on_packet(
+    conn: u32,
+    uuid: u128,
+    name: &str,
+    payload: Option<(&str, &[u8])>,
+) -> Option<Replies> {
     with_server(|side| {
         start(side);
         let voice = side.voice.as_ref()?;
-        let announce = side.announced.insert(conn).then(VoiceServer::register_payload);
+        let announce = side
+            .announced
+            .insert(conn)
+            .then(VoiceServer::register_payload);
         if let Some((channel, data)) = payload
             && channel.starts_with("voicechat:")
         {
@@ -154,9 +180,18 @@ mod tests {
     #[test]
     fn the_settings_file_sets_the_voice_server() {
         let c = config(&parse("")).unwrap();
-        assert_eq!((c.bind.port(), c.max_distance, c.whisper_distance), (24454, 48.0, 24.0));
-        let c = config(&parse("server_port=25570\nmax_distance = 30\nvoice_host= voice.example \n")).unwrap();
-        assert_eq!((c.bind.port(), c.max_distance, c.whisper_distance), (25570, 30.0, 15.0));
+        assert_eq!(
+            (c.bind.port(), c.max_distance, c.whisper_distance),
+            (24454, 48.0, 24.0)
+        );
+        let c = config(&parse(
+            "server_port=25570\nmax_distance = 30\nvoice_host= voice.example \n",
+        ))
+        .unwrap();
+        assert_eq!(
+            (c.bind.port(), c.max_distance, c.whisper_distance),
+            (25570, 30.0, 15.0)
+        );
         assert_eq!(c.voice_host, "voice.example");
         assert!(config(&parse("server_voice=false")).is_none());
     }

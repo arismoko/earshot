@@ -14,7 +14,9 @@ use earshot_core::plugin;
 use earshot_core::spatial::Listener;
 use earshot_core::ui::{self, Draw, MicState};
 use earshot_core::wire::Uuid;
-use mod_api::{ClientHost, ConfigPath, Corner, Corners, DrawContext, Host, Identifier, ServerboundPlayPacket};
+use mod_api::{
+    ClientHost, ConfigPath, Corner, Corners, DrawContext, Host, Identifier, ServerboundPlayPacket,
+};
 
 pub const ID: &str = "earshot";
 
@@ -115,7 +117,13 @@ fn load(host: &dyn ClientHost) -> State {
         output_device: get("output_device").filter(|s| !s.is_empty()),
         mic_volume: num("mic_volume", 1.0),
         output_volume: num("output_volume", 1.0),
-        mode: if get("mode").as_deref() == Some("voice") { Mode::Voice { threshold_dbfs: threshold } } else { Mode::PushToTalk },
+        mode: if get("mode").as_deref() == Some("voice") {
+            Mode::Voice {
+                threshold_dbfs: threshold,
+            }
+        } else {
+            Mode::PushToTalk
+        },
         noise_suppression: get("noise").as_deref() != Some("false"),
         group_volume: num("group_volume", 1.0),
         group_sounds: get("group_sounds").as_deref() != Some("false"),
@@ -123,7 +131,12 @@ fn load(host: &dyn ClientHost) -> State {
     };
     let volumes = file
         .iter()
-        .filter_map(|(k, v)| Some((Uuid::parse(k.strip_prefix("volume.")?)?, v.parse::<f32>().ok()?)))
+        .filter_map(|(k, v)| {
+            Some((
+                Uuid::parse(k.strip_prefix("volume.")?)?,
+                v.parse::<f32>().ok()?,
+            ))
+        })
         .collect::<HashMap<_, _>>();
     let client = VoiceClient::new(settings.clone());
     client.apply_settings(settings.clone());
@@ -163,12 +176,26 @@ fn save(host: &dyn Host, s: &mut State) {
     let mut set = |k: &str, v: String| {
         s.file.insert(k.to_owned(), v);
     };
-    set("mode", if matches!(s.settings.mode, Mode::Voice { .. }) { "voice" } else { "ptt" }.into());
+    set(
+        "mode",
+        if matches!(s.settings.mode, Mode::Voice { .. }) {
+            "voice"
+        } else {
+            "ptt"
+        }
+        .into(),
+    );
     set("threshold", s.threshold.to_string());
     set("mic_volume", s.settings.mic_volume.to_string());
     set("output_volume", s.settings.output_volume.to_string());
-    set("input_device", s.settings.input_device.clone().unwrap_or_default());
-    set("output_device", s.settings.output_device.clone().unwrap_or_default());
+    set(
+        "input_device",
+        s.settings.input_device.clone().unwrap_or_default(),
+    );
+    set(
+        "output_device",
+        s.settings.output_device.clone().unwrap_or_default(),
+    );
     set("noise", s.settings.noise_suppression.to_string());
     set("ptt_toggle", s.ptt_key.toggle.to_string());
     set("group_volume", s.settings.group_volume.to_string());
@@ -181,7 +208,9 @@ fn save(host: &dyn Host, s: &mut State) {
     let mut lines: Vec<String> = s.file.iter().map(|(k, v)| format!("{k}={v}")).collect();
     lines.sort();
     if let Ok(path) = ConfigPath::new(SETTINGS_FILE)
-        && let Err(e) = host.data_files().write(&path, (lines.join("\n") + "\n").as_bytes())
+        && let Err(e) = host
+            .data_files()
+            .write(&path, (lines.join("\n") + "\n").as_bytes())
     {
         eprintln!("[earshot] couldn't keep the settings: {e:?}");
     }
@@ -193,7 +222,9 @@ pub fn host_of(address: &str) -> String {
         return rest.split(']').next().unwrap_or(rest).to_string();
     }
     match address.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') && port.parse::<u16>().is_ok() => host.to_string(),
+        Some((host, port)) if !host.contains(':') && port.parse::<u16>().is_ok() => {
+            host.to_string()
+        }
         _ => address.to_string(),
     }
 }
@@ -207,7 +238,9 @@ pub fn key_label(key: &str) -> String {
     k.split('.')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -234,8 +267,12 @@ pub fn payload_body(channel: &str, data: &[u8]) -> Vec<u8> {
 
 /// Sends what the voice client wants to say over the game connection.
 pub fn flush(host: &mut dyn ClientHost) {
-    let Some(out) = with_existing(|s| s.client.take_outgoing()) else { return };
-    let Ok(id) = Identifier::parse("minecraft:custom_payload") else { return };
+    let Some(out) = with_existing(|s| s.client.take_outgoing()) else {
+        return;
+    };
+    let Ok(id) = Identifier::parse("minecraft:custom_payload") else {
+        return;
+    };
     for (channel, data) in out {
         let packet = ServerboundPlayPacket::new(id.clone(), payload_body(channel, &data));
         if let Err(e) = host.send_packet(packet) {
@@ -262,7 +299,9 @@ pub fn plugin_message(host: &mut dyn ClientHost, channel: &str, data: &[u8], ser
 pub fn chat_line(host: &dyn ClientHost, message: &mut mod_api::Text) {
     let component = crate::text_json::to_json(message);
     let translated = |key: &str| host.translate(key).is_some();
-    let Some(rewritten) = earshot_core::chat::rewrite(&component, &translated) else { return };
+    let Some(rewritten) = earshot_core::chat::rewrite(&component, &translated) else {
+        return;
+    };
     if with_state(host, |s| s.debug) {
         eprintln!("[earshot] voice chat line from the server: {component}");
     }
@@ -271,7 +310,13 @@ pub fn chat_line(host: &dyn ClientHost, message: &mut mod_api::Text) {
 
 /// The players the voice client knows of: their entity, and where their voice comes from.
 fn players(host: &dyn ClientHost, status: &Status) -> Vec<(Uuid, u32, [f64; 3])> {
-    let mut ids: Vec<Uuid> = status.has_voice.iter().chain(&status.voice_off).chain(&status.talking).copied().collect();
+    let mut ids: Vec<Uuid> = status
+        .has_voice
+        .iter()
+        .chain(&status.voice_off)
+        .chain(&status.talking)
+        .copied()
+        .collect();
     if let Some(g) = &status.my_group {
         ids.extend(g.members.iter().map(|m| m.0));
     }
@@ -290,14 +335,37 @@ fn players(host: &dyn ClientHost, status: &Status) -> Vec<(Uuid, u32, [f64; 3])>
         .collect()
 }
 
+/// Whether Earshot's key `id` is held (`KeyMapping.isDown`).
+fn key_down(host: &dyn ClientHost, id: &str) -> bool {
+    host.mod_key_mapping(ID, id)
+        .is_ok_and(|key| key.is_down(host).unwrap_or(false))
+}
+
+/// Takes one press of Earshot's key `id` (`KeyMapping.consumeClick`).
+fn key_clicked(host: &mut dyn ClientHost, id: &str) -> bool {
+    host.mod_key_mapping(ID, id)
+        .is_ok_and(|key| key.consume_click(host).unwrap_or(false))
+}
+
+/// The binding name of Earshot's key, or its default when it can't be read.
+fn key_binding(host: &dyn ClientHost, key: (&str, &str, &str)) -> String {
+    host.mod_key_mapping(ID, key.0)
+        .ok()
+        .and_then(|mapping| mapping.binding(host).ok().map(|(name, _)| name.to_owned()))
+        .unwrap_or_else(|| key.2.to_owned())
+}
+
 /// Once a tick: the keys, positions, push-to-talk, and anything to send.
 pub fn tick(host: &mut dyn ClientHost) {
     let reads: &dyn ClientHost = &*host;
     let playing = reads.playing();
     let menu_open = reads.mod_screen() == Some(ID);
-    let listener = reads.camera().map(|c| Listener { pos: c.position, yaw_degrees: c.yaw });
-    let ptt_down = reads.is_down(ID, KEY_PTT.0);
-    let whisper_down = reads.is_down(ID, KEY_WHISPER.0);
+    let listener = reads.camera().map(|c| Listener {
+        pos: c.position,
+        yaw_degrees: c.yaw,
+    });
+    let ptt_down = key_down(reads, KEY_PTT.0);
+    let whisper_down = key_down(reads, KEY_WHISPER.0);
     let status = with_state(reads, |s| s.client.status());
     let players = players(reads, &status);
     with_state(reads, |s| {
@@ -321,7 +389,7 @@ pub fn tick(host: &mut dyn ClientHost) {
         host.mod_screen_close(ID);
     }
     // The keys pressed while playing: the menu, mute and deafen.
-    if host.consume_click(ID, KEY_MENU.0) {
+    if key_clicked(host, KEY_MENU.0) {
         with_state(&*host, |s| {
             s.ptt_key.release();
             s.ptt = false;
@@ -332,14 +400,14 @@ pub fn tick(host: &mut dyn ClientHost) {
         host.mod_screen_open(ID);
     }
     let mut changed = false;
-    while host.consume_click(ID, KEY_MUTE.0) {
+    while key_clicked(host, KEY_MUTE.0) {
         with_state(&*host, |s| {
             s.muted = !s.muted;
             s.client.set_muted(s.muted);
         });
         changed = true;
     }
-    while host.consume_click(ID, KEY_DEAFEN.0) {
+    while key_clicked(host, KEY_DEAFEN.0) {
         with_state(&*host, |s| {
             s.deafened = !s.deafened;
             s.client.set_deafened(s.deafened);
@@ -379,7 +447,7 @@ pub fn disconnecting() {
 // --- HUD and name tags --------------------------------------------------------------------------
 
 fn width(host: &dyn ClientHost, text: &str) -> f32 {
-    host.text_width(&mod_api::Text::literal(text)).map_or(text.len() as f32 * 6.0, |w| w as f32)
+    host.text_width(&mod_api::Text::literal(text)) as f32
 }
 
 fn paint(draw: &mut dyn DrawContext, draws: &[Draw]) {
@@ -409,7 +477,9 @@ fn mic_state(s: &Status) -> MicState {
 /// The HUD: the microphone icon bottom left, a line while connecting, and in a voice
 /// group the group panel top left (its members, who's talking lit up).
 pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corners) {
-    let Some(status) = with_existing(|s| s.client.status()) else { return };
+    let Some(status) = with_existing(|s| s.client.status()) else {
+        return;
+    };
     if status.connection == "no voice server" {
         return;
     }
@@ -423,7 +493,10 @@ pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corn
     }
     let state = mic_state(&status);
     let icons = if status.deafened { 2.0 } else { 1.0 };
-    let group = status.my_group.as_ref().map(|g| format!("Group: {}", g.name));
+    let group = status
+        .my_group
+        .as_ref()
+        .map(|g| format!("Group: {}", g.name));
     let text_w = group.as_ref().map(|t| width(host, t) + 8.0).unwrap_or(0.0);
     let (x, y) = corners.place(Corner::BottomLeft, 22.0 * icons + text_w, 20.0);
     let mut draws = ui::mic_icon([x + 2.0, y + 2.0], state);
@@ -440,16 +513,31 @@ pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corn
 }
 
 /// In a voice group: its members top left, those talking now lit up with a speaker.
-fn group_panel(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corners, status: &Status) {
-    let Some(group) = &status.my_group else { return };
+fn group_panel(
+    host: &dyn ClientHost,
+    draw: &mut dyn DrawContext,
+    corners: &mut Corners,
+    status: &Status,
+) {
+    let Some(group) = &status.my_group else {
+        return;
+    };
     let members: Vec<ui::PanelMember> = group
         .members
         .iter()
         .map(|(id, name)| {
             let me = status.me == Some(*id);
             // Our own voice isn't played back to us: we're talking while the microphone sends.
-            let talking = if me { status.transmitting } else { status.talking.contains(id) };
-            ui::PanelMember { name: name.clone(), talking, me }
+            let talking = if me {
+                status.transmitting
+            } else {
+                status.talking.contains(id)
+            };
+            ui::PanelMember {
+                name: name.clone(),
+                talking,
+                me,
+            }
         })
         .collect();
     let (size, draws) = ui::group_panel(&group.name, &members, &|t| width(host, t));
@@ -457,11 +545,14 @@ fn group_panel(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut 
     paint(draw, &ui::translate(draws, [x, y]));
 }
 
+/// A name tag icon's lines (each from one point to another) and their colour.
+pub type TagIcon = (Vec<([f32; 2], [f32; 2])>, u32);
+
 /// The icon beside player `entity`'s name tag: a green speaker while they talk, a red one
 /// if they turned voice chat off, a grey crossed-out one if they aren't connected to voice
 /// (on a server that runs it) (`ui::tag_icon_for`). Its lines, in tag font pixels from the
 /// icon's centre, and their colour.
-pub fn tag_icon(entity: u32) -> Option<(Vec<([f32; 2], [f32; 2])>, u32)> {
+pub fn tag_icon(entity: u32) -> Option<TagIcon> {
     with_existing(|s| {
         let status = s.client.status();
         let on_voice_server = status.connected;
@@ -490,13 +581,17 @@ pub fn ours(host: &dyn ClientHost) -> bool {
 
 /// Nearby players for the menu, nearest first: the players the voice server told of.
 fn nearby_players(host: &dyn ClientHost, status: &Status) -> Vec<(Uuid, String, f64)> {
-    let Some(camera) = host.camera() else { return vec![] };
+    let Some(camera) = host.camera() else {
+        return vec![];
+    };
     let eye = camera.position;
     let reads: &dyn Host = host;
     let mut out: Vec<(Uuid, String, f64)> = players(host, status)
         .into_iter()
         .filter_map(|(id, _, at)| {
-            let d = ((at[0] - eye[0]).powi(2) + (at[1] - eye[1]).powi(2) + (at[2] - eye[2]).powi(2)).sqrt();
+            let d =
+                ((at[0] - eye[0]).powi(2) + (at[1] - eye[1]).powi(2) + (at[2] - eye[2]).powi(2))
+                    .sqrt();
             let name = reads
                 .player(u128::from_be_bytes(id.0))
                 .and_then(|p| p.entity().name(reads))
@@ -510,8 +605,17 @@ fn nearby_players(host: &dyn ClientHost, status: &Status) -> Vec<(Uuid, String, 
 
 fn device_label(chosen: &Option<String>, in_use: &str) -> String {
     match chosen {
-        None => format!("system default{}", if in_use.is_empty() { String::new() } else { format!(" ({in_use})") }),
-        Some(name) if in_use.contains("failed") || in_use.starts_with("none") => format!("{name} - {in_use}"),
+        None => format!(
+            "system default{}",
+            if in_use.is_empty() {
+                String::new()
+            } else {
+                format!(" ({in_use})")
+            }
+        ),
+        Some(name) if in_use.contains("failed") || in_use.starts_with("none") => {
+            format!("{name} - {in_use}")
+        }
         Some(name) => name.clone(),
     }
 }
@@ -534,13 +638,16 @@ fn model(host: &dyn ClientHost, s: &State) -> MenuModel {
         })
         .collect();
     let connection = if status.connected && s.debug {
-        format!("Connected - sent {} / heard {} voice frames", status.mic_frames_sent, status.voice_frames_received)
+        format!(
+            "Connected - sent {} / heard {} voice frames",
+            status.mic_frames_sent, status.voice_frames_received
+        )
     } else if status.connected {
         "Connected".to_string()
     } else {
         format!("Voice: {}", status.connection)
     };
-    let ptt_key = host.mod_key(ID, KEY_PTT.0).map_or_else(|| KEY_PTT.2.to_owned(), |k| k.0);
+    let ptt_key = key_binding(host, KEY_PTT);
     MenuModel {
         status: connection,
         connected: status.connected,
@@ -566,12 +673,25 @@ fn model(host: &dyn ClientHost, s: &State) -> MenuModel {
             .groups
             .iter()
             // A group that isn't normal says its type: "Raid (open)".
-            .map(|g| (g.id, group_label(g), g.has_password, g.members.len(), status.my_group.as_ref().is_some_and(|m| m.id == g.id)))
+            .map(|g| {
+                (
+                    g.id,
+                    group_label(g),
+                    g.has_password,
+                    g.members.len(),
+                    status.my_group.as_ref().is_some_and(|m| m.id == g.id),
+                )
+            })
             .collect(),
         group_members: status
             .my_group
             .as_ref()
-            .map(|g| g.members.iter().map(|(id, name)| (*id, name.clone(), status.talking.contains(id))).collect())
+            .map(|g| {
+                g.members
+                    .iter()
+                    .map(|(id, name)| (*id, name.clone(), status.talking.contains(id)))
+                    .collect()
+            })
             .unwrap_or_default(),
         group_problem: status.group_problem.clone(),
     }
@@ -581,7 +701,11 @@ fn next_device(devices: Vec<String>, current: &Option<String>) -> Option<String>
     // System default, then each device in turn.
     let mut all: Vec<Option<String>> = vec![None];
     all.extend(devices.into_iter().map(Some));
-    let i = all.iter().position(|d| d == current).map(|i| i + 1).unwrap_or(0);
+    let i = all
+        .iter()
+        .position(|d| d == current)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     all[i % all.len()].clone()
 }
 
@@ -610,7 +734,9 @@ fn apply(s: &mut State, action: MenuAction) -> bool {
         }
         MenuAction::ToggleMode => {
             s.settings.mode = match s.settings.mode {
-                Mode::PushToTalk => Mode::Voice { threshold_dbfs: s.threshold },
+                Mode::PushToTalk => Mode::Voice {
+                    threshold_dbfs: s.threshold,
+                },
                 Mode::Voice { .. } => Mode::PushToTalk,
             };
             true
@@ -655,11 +781,17 @@ fn apply(s: &mut State, action: MenuAction) -> bool {
             false
         }
         MenuAction::NextMicrophone => {
-            s.settings.input_device = next_device(earshot_core::audio::input_devices(), &s.settings.input_device);
+            s.settings.input_device = next_device(
+                earshot_core::audio::input_devices(),
+                &s.settings.input_device,
+            );
             true
         }
         MenuAction::NextSpeakers => {
-            s.settings.output_device = next_device(earshot_core::audio::output_devices(), &s.settings.output_device);
+            s.settings.output_device = next_device(
+                earshot_core::audio::output_devices(),
+                &s.settings.output_device,
+            );
             true
         }
         MenuAction::JoinGroup(id, password) => {
@@ -667,7 +799,11 @@ fn apply(s: &mut State, action: MenuAction) -> bool {
             settings_changed = false;
             false
         }
-        MenuAction::CreateGroup { name, password, kind } => {
+        MenuAction::CreateGroup {
+            name,
+            password,
+            kind,
+        } => {
             s.client.create_group(&name, password.as_deref(), kind);
             settings_changed = false;
             false
@@ -692,7 +828,10 @@ fn apply(s: &mut State, action: MenuAction) -> bool {
 
 /// The GUI's size in GUI pixels.
 fn gui(draw_size: Option<[f32; 2]>, screen_rect: [f32; 4]) -> [f32; 2] {
-    draw_size.unwrap_or([screen_rect[0] + screen_rect[2], screen_rect[1] + screen_rect[3]])
+    draw_size.unwrap_or([
+        screen_rect[0] + screen_rect[2],
+        screen_rect[1] + screen_rect[3],
+    ])
 }
 
 /// Draws the menu.
@@ -754,7 +893,7 @@ pub fn screen_release(host: &dyn ClientHost) -> bool {
 pub fn screen_key(host: &dyn ClientHost, key: &str) -> bool {
     let typing = with_state(host, |s| s.menu.typing());
     if !typing {
-        let menu_key = host.mod_key(ID, KEY_MENU.0).map_or_else(|| KEY_MENU.2.to_owned(), |k| k.0);
+        let menu_key = key_binding(host, KEY_MENU);
         if key == menu_key {
             with_state(host, |s| s.close_menu = true);
             return true;
