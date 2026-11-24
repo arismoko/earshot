@@ -70,7 +70,7 @@ Earshot has the original's client features except those listed here.
 
 - **Not in Earshot:** automatic gain control and voice activity detection (the original's use native libraries; the
   threshold mode here is a plain level), recording (including its key and options), onboarding, the group invite
-  button on the social screen (invites that arrive in chat work), and the macOS microphone check. The denoiser is
+  button on the social screen ([sunrise-org/sunrise#5299](https://github.com/sunrise-org/sunrise/issues/5299); invites that arrive in chat work), and the macOS microphone check. The denoiser is
   Earshot's own filter, not RNNoise.
 - **Different:** volume falls off with distance by Earshot's own curve, over the range the server sends. The disable key
   turns voice chat off for the session; the **Voice chat** switch in Options > Mods keeps it off. Deafen is an addition of Earshot's, so it is unbound.
@@ -103,7 +103,7 @@ Earshot 1.x could host voice on a dedicated server and listened on UDP port 2445
 
 ## Install
 
-Made for Sunrise Dev build `ebd2d226`. It uses only the mod API, so the launcher also builds it on later Sunrise
+Made for Sunrise Dev build `f8aa80e`. It uses only the mod API, so the launcher also builds it on later Sunrise
 builds where nothing it uses changed.
 
 From the Sunrise registry: open **Mods** in the launcher, find **Earshot**, and choose **Install**. The launcher
@@ -123,8 +123,8 @@ the keys (registered key mappings) and the settings. It patches no game function
 Earshot's audio library (cpal) uses ALSA on Linux, CoreAudio on macOS and WASAPI on Windows; the mod brings its own
 copy of these bindings.
 
-The voice server for dedicated servers needs a hook the mod API doesn't have yet (a player's custom payloads on the
-server), so hosting is off in this version.
+Hosting voice on a dedicated server is off in this version: its game patch is gone, and the server half has not yet
+moved to the mod API's raw plugin channels.
 
 ## How it works
 

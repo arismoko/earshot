@@ -12,7 +12,7 @@ What it does:
 
 Differences from the original:
 
-- No automatic gain control, voice activity detection, recording, onboarding or social-screen invite button; the denoiser is Earshot's own filter.
+- No automatic gain control, voice activity detection, recording or onboarding, and no invite button in the social screen ([sunrise-org/sunrise#5299](https://github.com/sunrise-org/sunrise/issues/5299)); the denoiser is Earshot's own filter.
 - Volume falls off by Earshot's own curve; menu text is English only.
 - This version does not host voice on dedicated servers; it joins servers that run Simple Voice Chat.
 """
