@@ -5,6 +5,8 @@
 //! only paints them with Horizon's helpers. All icons are Earshot's own, drawn from rectangles
 //! and lines.
 
+use crate::wire::Uuid;
+
 /// One thing to paint. Colours are ARGB for shapes, RGB for text.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
@@ -27,6 +29,12 @@ pub enum Draw {
         at: [f32; 2],
         rgb: u32,
         scale: f32,
+    },
+    /// Player `id`'s skin face with its hat layer, `size` GUI pixels square at `at`.
+    Face {
+        id: Uuid,
+        at: [f32; 2],
+        size: f32,
     },
 }
 
@@ -153,6 +161,8 @@ pub fn lock_icon(at: [f32; 2], argb: u32) -> Vec<Draw> {
 /// One member line of the group panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelMember {
+    /// The player, whose face is drawn before the name.
+    pub id: Uuid,
     pub name: String,
     /// Talking right now: heard in the last moment, or our own microphone sending.
     pub talking: bool,
@@ -165,13 +175,15 @@ pub const PANEL_MAX_MEMBERS: usize = 8;
 /// A line's height and the panel's padding, in GUI pixels.
 const PANEL_ROW: f32 = 11.0;
 const PANEL_PAD: f32 = 3.0;
-/// Room for the speaker before each name.
-const PANEL_ICON: f32 = 10.0;
+/// A member's face, and the room for it before each name.
+const PANEL_FACE: f32 = 8.0;
+const PANEL_ICON: f32 = 11.0;
 /// Between members on a horizontal panel.
 const PANEL_GAP: f32 = 6.0;
 
 /// The panel shown in the top-left corner while in a voice group: the group's name, then its
-/// members, those talking now in white with a green speaker beside them, the others grey.
+/// members, each with their face, those talking now in white with their face framed in green,
+/// the others grey.
 /// `width_of` measures text in GUI pixels. Returns the panel's size and its draws, with its
 /// top-left at (0, 0): [`translate`] moves them where the panel goes.
 pub fn group_panel(
@@ -192,18 +204,18 @@ pub fn group_panel(
         }
     };
     // Every line after the title: a member each, then the count of the rest.
-    let mut entries: Vec<(String, u32, bool)> = shown
+    let mut entries: Vec<(String, u32, Option<&PanelMember>)> = shown
         .iter()
         .map(|m| {
             (
                 label(m),
                 if m.talking { 0xFFFFFF } else { 0xAAAAAA },
-                m.talking,
+                Some(m),
             )
         })
         .collect();
     if let Some(t) = more {
-        entries.push((t, 0x888888, false));
+        entries.push((t, 0x888888, None));
     }
 
     let cell = |t: &str| PANEL_ICON + width_of(t);
@@ -229,9 +241,9 @@ pub fn group_panel(
         });
         let mut x = PANEL_PAD;
         let y = PANEL_PAD + PANEL_ROW;
-        for (text, rgb, talking) in entries {
-            if talking {
-                out.extend(small_speaker([x, y], 0xFF55FF55));
+        for (text, rgb, member) in entries {
+            if let Some(m) = member {
+                out.extend(member_face([x, y], m));
             }
             let w = cell(&text);
             out.push(Draw::Label {
@@ -258,10 +270,10 @@ pub fn group_panel(
             at: [PANEL_PAD, PANEL_PAD],
             rgb: 0x7CE38B,
         });
-        for (i, (text, rgb, talking)) in entries.into_iter().enumerate() {
+        for (i, (text, rgb, member)) in entries.into_iter().enumerate() {
             let y = PANEL_PAD + (i + 1) as f32 * PANEL_ROW;
-            if talking {
-                out.extend(small_speaker([PANEL_PAD, y], 0xFF55FF55));
+            if let Some(m) = member {
+                out.extend(member_face([PANEL_PAD, y], m));
             }
             out.push(Draw::Label {
                 text,
@@ -273,22 +285,32 @@ pub fn group_panel(
     (size, out)
 }
 
-/// A small speaker for the group panel, 7 x 8 GUI pixels with its top-left at `at`.
-fn small_speaker(at: [f32; 2], argb: u32) -> Vec<Draw> {
-    let r = |x: f32, y: f32, w: f32, h: f32| Draw::Fill {
-        rect: [at[0] + x, at[1] + y, w, h],
-        argb,
-    };
-    vec![
-        // Box and cone.
-        r(0.0, 3.0, 2.0, 2.0),
-        r(2.0, 2.0, 1.0, 4.0),
-        r(3.0, 1.0, 1.0, 6.0),
-        // One wave.
-        r(5.0, 2.0, 1.0, 1.0),
-        r(6.0, 3.0, 1.0, 2.0),
-        r(5.0, 5.0, 1.0, 1.0),
-    ]
+/// A member's face, `PANEL_FACE` square with its top-left at `at`, in a one-pixel green frame
+/// while they talk.
+fn member_face(at: [f32; 2], m: &PanelMember) -> Vec<Draw> {
+    let mut out = Vec::new();
+    if m.talking {
+        let [x, y] = [at[0] - 1.0, at[1] - 1.0];
+        let side = PANEL_FACE + 2.0;
+        out.extend(
+            [
+                [x, y, side, 1.0],
+                [x, y + side - 1.0, side, 1.0],
+                [x, y + 1.0, 1.0, side - 2.0],
+                [x + side - 1.0, y + 1.0, 1.0, side - 2.0],
+            ]
+            .map(|rect| Draw::Fill {
+                rect,
+                argb: 0xFF55FF55,
+            }),
+        );
+    }
+    out.push(Draw::Face {
+        id: m.id,
+        at,
+        size: PANEL_FACE,
+    });
+    out
 }
 
 /// `draws` moved by `by` GUI pixels.
@@ -320,6 +342,11 @@ pub fn translate(draws: Vec<Draw>, by: [f32; 2]) -> Vec<Draw> {
                 at: p(at),
                 rgb,
                 scale,
+            },
+            Draw::Face { id, at, size } => Draw::Face {
+                id,
+                at: p(at),
+                size,
             },
         })
         .collect()
@@ -360,6 +387,11 @@ pub fn scale(draws: Vec<Draw>, factor: f32) -> Vec<Draw> {
                 at: p(at),
                 rgb,
                 scale: scale * factor,
+            },
+            Draw::Face { id, at, size } => Draw::Face {
+                id,
+                at: p(at),
+                size: size * factor,
             },
         })
         .collect()
@@ -465,6 +497,7 @@ mod tests {
                 vec![[rect[0], rect[1]], [rect[0] + rect[2], rect[1] + rect[3]]]
             }
             Draw::Quad { points, .. } => points.to_vec(),
+            Draw::Face { at, size, .. } => vec![*at, [at[0] + size, at[1] + size]],
             Draw::Label { .. } | Draw::Scaled { .. } => vec![],
         }
     }
@@ -570,6 +603,7 @@ mod tests {
 
     fn member(name: &str, talking: bool, me: bool) -> PanelMember {
         PanelMember {
+            id: Uuid([name.len() as u8; 16]),
             name: name.into(),
             talking,
             me,
@@ -617,7 +651,21 @@ mod tests {
                 3.0 * PANEL_ROW + 2.0 * PANEL_PAD - 2.0
             ]
         );
-        // One green speaker, beside the talking member's line only.
+        // A face per member; one green frame, around the talking member's face only.
+        let faces: Vec<[f32; 2]> = draws
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Face { at, .. } => Some(*at),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            faces,
+            [
+                [PANEL_PAD, PANEL_PAD + PANEL_ROW],
+                [PANEL_PAD, PANEL_PAD + 2.0 * PANEL_ROW]
+            ]
+        );
         let green: Vec<&Draw> = draws
             .iter()
             .filter(|d| {
@@ -635,9 +683,9 @@ mod tests {
         for d in green {
             for p in points(d) {
                 assert!(
-                    p[1] >= first_line
-                        && p[1] <= first_line + 8.0
-                        && p[0] <= PANEL_PAD + PANEL_ICON,
+                    p[1] >= first_line - 1.0
+                        && p[1] <= first_line + PANEL_FACE + 1.0
+                        && p[0] <= PANEL_PAD + PANEL_FACE + 1.0,
                     "{p:?}"
                 );
             }

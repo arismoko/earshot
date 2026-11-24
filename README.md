@@ -73,8 +73,7 @@ Earshot has the original's client features except those listed here.
   button on the social screen (invites that arrive in chat work), and the macOS microphone check. The denoiser is
   Earshot's own filter, not RNNoise.
 - **Different:** volume falls off with distance by Earshot's own curve, over the range the server sends. The disable key
-  turns voice chat off for the session; the **Voice chat** switch in Options > Mods keeps it off. The group panel shows
-  a speaker, not the player's head. Deafen is an addition of Earshot's, so it is unbound.
+  turns voice chat off for the session; the **Voice chat** switch in Options > Mods keeps it off. Deafen is an addition of Earshot's, so it is unbound.
 - Menu and HUD text is English only.
 
 ## Works with

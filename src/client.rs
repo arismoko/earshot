@@ -15,8 +15,10 @@ use earshot_core::plugin;
 use earshot_core::spatial::Listener;
 use earshot_core::ui::{self, Draw, MicState};
 use earshot_core::wire::Uuid;
+use mod_api::client::hud_layout::PoseOp;
 use mod_api::{
-    ClientHost, ConfigPath, Corner, Corners, DrawContext, Host, Identifier, ServerboundPlayPacket,
+    ClientHost, ConfigPath, Corner, Corners, DrawContext, GuiDraw, Host, Identifier,
+    ServerboundPlayPacket,
 };
 
 pub const ID: &str = "earshot";
@@ -550,6 +552,26 @@ fn paint(draw: &mut dyn DrawContext, draws: &[Draw]) {
                 rgb,
                 scale,
             } => draw.text_scaled(text, *at, *scale, 0xFF00_0000 | rgb, true),
+            // `PlayerFaceExtractor` draws whole GUI pixels: the pose carries the panel's place
+            // and scale. A refused face (none this op can produce) leaves the rest drawn.
+            Draw::Face { id, at, size } => {
+                let _ = draw.gui_paint(&[
+                    GuiDraw::Push(vec![
+                        PoseOp::Translate(at[0], at[1]),
+                        PoseOp::Scale(size / 8.0, size / 8.0),
+                    ]),
+                    GuiDraw::PlayerFace {
+                        uuid: u128::from_be_bytes(id.0),
+                        x: 0,
+                        y: 0,
+                        size: 8,
+                        hat: true,
+                        flip: false,
+                        color: 0xFFFF_FFFF,
+                    },
+                    GuiDraw::Pop,
+                ]);
+            }
         }
     }
 }
@@ -660,6 +682,7 @@ fn group_panel(
                 status.talking.contains(id)
             };
             ui::PanelMember {
+                id: *id,
                 name: name.clone(),
                 talking,
                 me,
