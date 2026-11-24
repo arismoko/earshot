@@ -19,13 +19,13 @@ Differences from the original:
 categories = ["social"]
 
 [[screenshots]]
-path = "screenshots/voice-menu.png"
+path = "page/voice-menu.png"
 caption = "The voice menu."
 
 [[screenshots]]
-path = "screenshots/settings.png"
+path = "page/settings.png"
 caption = "Settings: volumes, push to talk, mic test and devices."
 
 [[screenshots]]
-path = "screenshots/create-group.png"
+path = "page/create-group.png"
 caption = "Creating a voice group."

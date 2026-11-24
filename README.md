@@ -16,7 +16,7 @@ A port of selfmonoraque5's [Earshot](https://github.com/selfmonoraque5/earshot) 
 
 | Voice menu (V) | Settings | Voice groups |
 |---|---|---|
-| ![The voice menu: settings, groups, players, and mic, sound and voice switches](screenshots/voice-menu.png) | ![Settings: volumes, push to talk, mic test and level, noise reduction, devices](screenshots/settings.png) | ![Creating a voice group with a name, an optional password and a type](screenshots/create-group.png) |
+| ![The voice menu: settings, groups, players, and mic, sound and voice switches](page/voice-menu.png) | ![Settings: volumes, push to talk, mic test and level, noise reduction, devices](page/settings.png) | ![Creating a voice group with a name, an optional password and a type](page/create-group.png) |
 
 ## Features
 
