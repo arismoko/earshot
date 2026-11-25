@@ -90,7 +90,10 @@ mod tests {
             let seconds = s.len() as f32 / RATE;
             assert!((0.15..0.25).contains(&seconds), "{seconds} s");
             assert!(peak(&s) > 0.1 && peak(&s) <= PEAK, "peak {}", peak(&s));
-            assert!(s.first().unwrap().abs() < 1e-3 && s.last().unwrap().abs() < 1e-3, "no click at either end");
+            assert!(
+                s.first().unwrap().abs() < 1e-3 && s.last().unwrap().abs() < 1e-3,
+                "no click at either end"
+            );
         }
     }
 
@@ -115,12 +118,40 @@ mod tests {
         let (ann, bob) = (Uuid([10; 16]), Uuid([11; 16]));
         let view = |group: Uuid, members: &[Uuid]| Some((group, members.to_vec()));
         assert_eq!(group_change(&None, &None), None);
-        assert_eq!(group_change(&None, &view(g, &[])), Some(Chime::Join), "we joined");
-        assert_eq!(group_change(&view(g, &[ann]), &None), Some(Chime::Leave), "we left");
-        assert_eq!(group_change(&view(g, &[ann]), &view(h, &[])), Some(Chime::Join), "we moved");
-        assert_eq!(group_change(&view(g, &[ann]), &view(g, &[ann, bob])), Some(Chime::Join), "bob joined");
-        assert_eq!(group_change(&view(g, &[ann, bob]), &view(g, &[ann])), Some(Chime::Leave), "bob left");
-        assert_eq!(group_change(&view(g, &[ann, bob]), &view(g, &[bob, ann])), None, "order doesn't matter");
-        assert_eq!(group_change(&view(g, &[ann]), &view(g, &[bob])), Some(Chime::Join), "a swap: join wins");
+        assert_eq!(
+            group_change(&None, &view(g, &[])),
+            Some(Chime::Join),
+            "we joined"
+        );
+        assert_eq!(
+            group_change(&view(g, &[ann]), &None),
+            Some(Chime::Leave),
+            "we left"
+        );
+        assert_eq!(
+            group_change(&view(g, &[ann]), &view(h, &[])),
+            Some(Chime::Join),
+            "we moved"
+        );
+        assert_eq!(
+            group_change(&view(g, &[ann]), &view(g, &[ann, bob])),
+            Some(Chime::Join),
+            "bob joined"
+        );
+        assert_eq!(
+            group_change(&view(g, &[ann, bob]), &view(g, &[ann])),
+            Some(Chime::Leave),
+            "bob left"
+        );
+        assert_eq!(
+            group_change(&view(g, &[ann, bob]), &view(g, &[bob, ann])),
+            None,
+            "order doesn't matter"
+        );
+        assert_eq!(
+            group_change(&view(g, &[ann]), &view(g, &[bob])),
+            Some(Chime::Join),
+            "a swap: join wins"
+        );
     }
 }

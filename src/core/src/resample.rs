@@ -22,7 +22,12 @@ pub struct Resampler<const N: usize> {
 impl<const N: usize> Resampler<N> {
     pub fn new(from: u32, to: u32) -> Self {
         assert!(from > 0 && to > 0, "sample rates must be positive");
-        Self { step: from as f64 / to as f64, t: 0.0, prev: None, next: None }
+        Self {
+            step: from as f64 / to as f64,
+            t: 0.0,
+            prev: None,
+            next: None,
+        }
     }
 
     /// Produces one output frame, or `None` when the source has run dry. Nothing is lost on
@@ -59,7 +64,9 @@ mod tests {
         let mut r = Resampler::<1>::new(from, to);
         let mut it = input.iter().copied();
         let mut src = || it.next().map(|s| [s]);
-        std::iter::from_fn(|| r.pull(&mut src)).map(|f| f[0]).collect()
+        std::iter::from_fn(|| r.pull(&mut src))
+            .map(|f| f[0])
+            .collect()
     }
 
     #[test]
@@ -82,10 +89,18 @@ mod tests {
     #[test]
     fn a_tone_keeps_its_pitch() {
         // 1 kHz at 44.1 kHz, resampled to 48 kHz: count zero crossings over one second.
-        let input: Vec<f32> = (0..44_100).map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin()).collect();
+        let input: Vec<f32> = (0..44_100)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin())
+            .collect();
         let out = run(44_100, 48_000, &input);
-        let crossings = out.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
-        assert!((1995..=2005).contains(&crossings), "{crossings} crossings, expected about 2000");
+        let crossings = out
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        assert!(
+            (1995..=2005).contains(&crossings),
+            "{crossings} crossings, expected about 2000"
+        );
     }
 
     #[test]

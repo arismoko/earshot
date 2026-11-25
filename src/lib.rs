@@ -6,7 +6,7 @@
 //! Earshot is an independent project, not affiliated with Simple Voice Chat.
 use mod_api::{
     self, ClientChatReceivedEvent, ClientHost, ClientPacketEvent, ClientPlayerLoggingOutEvent,
-    ClientTickPostEvent, Flow, Hooks, KeyRegistration, Registrar, RegistrationContext,
+    ClientTickPostEvent, Flow, Hooks, Host, KeyRegistration, Registrar, RegistrationContext,
     RenderGuiPostEvent, RenderPlayerPostEvent, ScreenCharTypedPreEvent, ScreenKeyPressedPreEvent,
     ScreenMouseButtonPressedPreEvent, ScreenMouseButtonReleasedPreEvent,
     ScreenMouseDraggedPreEvent, ScreenRenderPostEvent, ServerHost, ServerTickEvent,
@@ -35,22 +35,26 @@ impl Hooks for Earshot {
         for (id, _, key) in client::KEYS {
             r.register_key_mapping(KeyRegistration::new(id, key).label(&format!("{ID}.key.{id}")));
         }
-        let _ = r.register_setting(SettingSpec::toggle(
+        let voice = r.register_setting(SettingSpec::toggle(
             client::SETTING_VOICE,
             format!("{ID}.option.voice_chat"),
             true,
         ));
-        let _ = r.register_setting(SettingSpec::toggle(
+        let debug = r.register_setting(SettingSpec::toggle(
             client::SETTING_DEBUG,
             format!("{ID}.option.debug"),
             false,
         ));
+        client::set_setting_keys(client::SettingKeys {
+            voice: voice.ok(),
+            debug: debug.ok(),
+        });
     }
 
-    fn setting_changed(&self, host: &mut dyn ClientHost, _: &mut SettingChangedEvent<'_>) {
-        client::page_changed(&*host);
-        // Turning voice off or on is a message to the server.
-        client::flush(host);
+    /// The read-only host can't send: turning voice off or on reaches the server on the
+    /// next client tick.
+    fn setting_changed(&self, host: &dyn Host, _: &mut SettingChangedEvent<'_>) {
+        client::page_changed(host);
     }
 
     /// Every play packet from the server: SVC's plugin messages go to the voice client.
@@ -64,7 +68,7 @@ impl Hooks for Earshot {
             .and_then(|c| c.address)
             .unwrap_or_default()
             .to_owned();
-        client::plugin_message(host, &payload.channel, &payload.data, &server);
+        client::plugin_message(host, payload.channel, payload.data, &server);
     }
 
     /// A chat line from the server: voice chat lines in Earshot's own words.
@@ -90,7 +94,7 @@ impl Hooks for Earshot {
     }
 
     fn render_gui_post(&self, host: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>) {
-        client::hud(host, &mut *event.draw, &mut *event.corners);
+        client::hud(host, &mut *event.draw);
     }
 
     /// Beside each other player's name tag, the icon `client::tag_icon` gives, facing the camera.

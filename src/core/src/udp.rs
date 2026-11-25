@@ -8,7 +8,7 @@
 //! key. Inside is one message whose first byte is its type.
 
 use crate::crypto::{CryptoError, VoiceKey};
-use crate::wire::{DecodeError, WireReader, Uuid, Writer};
+use crate::wire::{DecodeError, Uuid, WireReader, Writer};
 
 const MAGIC: u8 = 0xff;
 
@@ -76,10 +76,21 @@ impl Message {
                 w.u8(0x01).bytes(&m.opus).u64(m.sequence).u8(m.flag);
             }
             Message::PlayerSound(s) => {
-                w.u8(0x02).uuid(&s.channel).uuid(&s.sender).bytes(&s.opus).u64(s.sequence).f32(s.distance).u8(s.flag);
+                w.u8(0x02)
+                    .uuid(&s.channel)
+                    .uuid(&s.sender)
+                    .bytes(&s.opus)
+                    .u64(s.sequence)
+                    .f32(s.distance)
+                    .u8(s.flag);
             }
             Message::GroupSound(s) => {
-                w.u8(0x03).uuid(&s.channel).uuid(&s.sender).bytes(&s.opus).u64(s.sequence).u8(s.flag);
+                w.u8(0x03)
+                    .uuid(&s.channel)
+                    .uuid(&s.sender)
+                    .bytes(&s.opus)
+                    .u64(s.sequence)
+                    .u8(s.flag);
             }
             Message::Authenticate { player, secret } => {
                 w.u8(0x05).uuid(player).raw(secret);
@@ -174,7 +185,11 @@ impl std::fmt::Display for PacketError {
 impl std::error::Error for PacketError {}
 
 /// Builds a client -> server packet.
-pub fn seal_to_server(key: &VoiceKey, sender: &Uuid, msg: &Message) -> Result<Vec<u8>, CryptoError> {
+pub fn seal_to_server(
+    key: &VoiceKey,
+    sender: &Uuid,
+    msg: &Message,
+) -> Result<Vec<u8>, CryptoError> {
     let sealed = key.seal(&msg.encode())?;
     let mut w = Writer::new();
     w.u8(MAGIC).uuid(sender).bytes(&sealed);
@@ -231,10 +246,18 @@ mod tests {
 
     /// Capture 03's secret (NullPort404) and capture 05's secret for AIOMarcus.
     fn key_03() -> VoiceKey {
-        VoiceKey::new(&from_hex("91f06606a6b37a6a2fe55466a7dec84f").try_into().unwrap())
+        VoiceKey::new(
+            &from_hex("91f06606a6b37a6a2fe55466a7dec84f")
+                .try_into()
+                .unwrap(),
+        )
     }
     fn key_05_aio() -> VoiceKey {
-        VoiceKey::new(&from_hex("24d290e8f7bb3b0393c8e00384f80927").try_into().unwrap())
+        VoiceKey::new(
+            &from_hex("24d290e8f7bb3b0393c8e00384f80927")
+                .try_into()
+                .unwrap(),
+        )
     }
     fn nullport() -> Uuid {
         Uuid::parse("c5c602ae-651d-3857-9a04-b3e776be1219").unwrap()
@@ -249,7 +272,8 @@ mod tests {
     const MIC_03: &str = "ffc5c602ae651d38579a04b3e776be1219490493ebcc0028336c39a86f11cb0010e5597e56968c5c58684e5aa88b9df0032f3f0190f5fd8e038154387594fd9b4f12b861a5bc685adf97b2e409aa72ee4db36b90444c56b040e3b1";
     const SOUND_05_TO_AIO: &str = "ff6d2d1fcbf42bb03b6026c91b8b8a441615d43ae8037c64875cd122d58f7d762241c73aea9c990075dd4ae1a8335cbb73ad15d5b1b4596d93aeb6397f943a3eed6e7c1a8df667928d8c460cc64c36f312eae606db9c3dfb93535a8fba73c8b35ed55cd55c8e7326b8c9ac29781f1e";
     /// The first Opus frame NullPort404 sent in capture 05 (also the first in capture 03).
-    const FIRST_FRAME: &str = "780be4c136f8455dea51258bd593cf3a29592005396b51ee9559584a3e1b296cff00";
+    const FIRST_FRAME: &str =
+        "780be4c136f8455dea51258bd593cf3a29592005396b51ee9559584a3e1b296cff00";
 
     #[test]
     fn opens_the_captured_handshake() {
@@ -258,18 +282,37 @@ mod tests {
         assert_eq!(sender, nullport());
         assert_eq!(
             auth,
-            Message::Authenticate { player: nullport(), secret: from_hex("91f06606a6b37a6a2fe55466a7dec84f").try_into().unwrap() }
+            Message::Authenticate {
+                player: nullport(),
+                secret: from_hex("91f06606a6b37a6a2fe55466a7dec84f")
+                    .try_into()
+                    .unwrap()
+            }
         );
-        assert_eq!(open_from_server(&k, &from_hex(AUTH_ACK_03)).unwrap(), Message::AuthenticateAck);
-        assert_eq!(open_from_client(&k, &from_hex(CHECK_03)).unwrap().1, Message::ConnectionCheck);
-        assert_eq!(open_from_server(&k, &from_hex(CHECK_ACK_03)).unwrap(), Message::ConnectionCheckAck);
-        assert_eq!(open_from_server(&k, &from_hex(KEEP_ALIVE_03)).unwrap(), Message::KeepAlive);
+        assert_eq!(
+            open_from_server(&k, &from_hex(AUTH_ACK_03)).unwrap(),
+            Message::AuthenticateAck
+        );
+        assert_eq!(
+            open_from_client(&k, &from_hex(CHECK_03)).unwrap().1,
+            Message::ConnectionCheck
+        );
+        assert_eq!(
+            open_from_server(&k, &from_hex(CHECK_ACK_03)).unwrap(),
+            Message::ConnectionCheckAck
+        );
+        assert_eq!(
+            open_from_server(&k, &from_hex(KEEP_ALIVE_03)).unwrap(),
+            Message::KeepAlive
+        );
     }
 
     #[test]
     fn opens_a_captured_mic_frame() {
         let (_, msg) = open_from_client(&key_03(), &from_hex(MIC_03)).unwrap();
-        let Message::Mic(m) = msg else { panic!("expected mic frame, got {msg:?}") };
+        let Message::Mic(m) = msg else {
+            panic!("expected mic frame, got {msg:?}")
+        };
         assert_eq!(m.sequence, 0);
         assert_eq!(m.flag, 0);
         assert_eq!(m.opus, from_hex(FIRST_FRAME));
@@ -279,7 +322,9 @@ mod tests {
     #[test]
     fn opens_a_captured_sound_from_another_player() {
         let msg = open_from_server(&key_05_aio(), &from_hex(SOUND_05_TO_AIO)).unwrap();
-        let Message::PlayerSound(s) = msg else { panic!("expected player sound, got {msg:?}") };
+        let Message::PlayerSound(s) = msg else {
+            panic!("expected player sound, got {msg:?}")
+        };
         assert_eq!(s.sender, nullport());
         assert_eq!(s.channel, nullport());
         assert_eq!(s.opus, from_hex(FIRST_FRAME), "relayed byte-for-byte");
@@ -290,25 +335,43 @@ mod tests {
     fn opens_a_captured_group_sound() {
         // Capture 06 at 532.38 s: NullPort404's voice to AIOMarcus, both in "TestPassword",
         // sealed with AIOMarcus's key of that session.
-        let key = VoiceKey::new(&from_hex("12fb9ec059cb64ca9ff2a46af90cd2ad").try_into().unwrap());
-        let raw = from_hex("ff4acbce969fa12d548b400d9c1e97dd69ad13fece9c9985f87fb9d3e9a5a7b0c8fe05f3ba75a79f63035dec81a9978966a84b45c91372f1054933f823590473a51303ba8cfe5a1cbd66b47f");
+        let key = VoiceKey::new(
+            &from_hex("12fb9ec059cb64ca9ff2a46af90cd2ad")
+                .try_into()
+                .unwrap(),
+        );
+        let raw = from_hex(
+            "ff4acbce969fa12d548b400d9c1e97dd69ad13fece9c9985f87fb9d3e9a5a7b0c8fe05f3ba75a79f63035dec81a9978966a84b45c91372f1054933f823590473a51303ba8cfe5a1cbd66b47f",
+        );
         let msg = open_from_server(&key, &raw).unwrap();
-        let Message::GroupSound(g) = &msg else { panic!("expected group sound, got {msg:?}") };
+        let Message::GroupSound(g) = &msg else {
+            panic!("expected group sound, got {msg:?}")
+        };
         assert_eq!((g.sender, g.channel), (nullport(), nullport()));
-        assert_eq!((g.opus.as_slice(), g.sequence, g.flag), (&[0xf8, 0xff, 0xfe][..], 275, 0));
+        assert_eq!(
+            (g.opus.as_slice(), g.sequence, g.flag),
+            (&[0xf8, 0xff, 0xfe][..], 275, 0)
+        );
         assert_eq!(Message::decode(&msg.encode()), Ok(msg));
     }
 
     #[test]
     fn wrong_key_is_a_crypto_error() {
-        assert_eq!(open_from_server(&key_05_aio(), &from_hex(KEEP_ALIVE_03)), Err(PacketError::Crypto(CryptoError::BadTag)));
+        assert_eq!(
+            open_from_server(&key_05_aio(), &from_hex(KEEP_ALIVE_03)),
+            Err(PacketError::Crypto(CryptoError::BadTag))
+        );
     }
 
     #[test]
     fn every_message_round_trips_through_a_sealed_packet() {
         let k = key_03();
         let msgs = [
-            Message::Mic(MicFrame { opus: vec![0x78, 1, 2, 3], sequence: 41, flag: 0 }),
+            Message::Mic(MicFrame {
+                opus: vec![0x78, 1, 2, 3],
+                sequence: 41,
+                flag: 0,
+            }),
             Message::PlayerSound(PlayerSound {
                 channel: nullport(),
                 sender: nullport(),
@@ -317,7 +380,10 @@ mod tests {
                 distance: 48.0,
                 flag: 0,
             }),
-            Message::Authenticate { player: nullport(), secret: [9; 16] },
+            Message::Authenticate {
+                player: nullport(),
+                secret: [9; 16],
+            },
             Message::AuthenticateAck,
             Message::KeepAlive,
             Message::ConnectionCheck,
@@ -325,7 +391,10 @@ mod tests {
         ];
         for m in msgs {
             let to_server = seal_to_server(&k, &nullport(), &m).unwrap();
-            assert_eq!(open_from_client(&k, &to_server).unwrap(), (nullport(), m.clone()));
+            assert_eq!(
+                open_from_client(&k, &to_server).unwrap(),
+                (nullport(), m.clone())
+            );
             let to_client = seal_to_client(&k, &m).unwrap();
             assert_eq!(open_from_server(&k, &to_client).unwrap(), m);
         }
@@ -336,7 +405,12 @@ mod tests {
         // A 1-byte message gives a 31-byte server -> client packet and a 47-byte client -> server one.
         let k = key_03();
         assert_eq!(seal_to_client(&k, &Message::KeepAlive).unwrap().len(), 31);
-        assert_eq!(seal_to_server(&k, &nullport(), &Message::KeepAlive).unwrap().len(), 47);
+        assert_eq!(
+            seal_to_server(&k, &nullport(), &Message::KeepAlive)
+                .unwrap()
+                .len(),
+            47
+        );
     }
 
     #[test]
@@ -345,7 +419,10 @@ mod tests {
         assert!(open_from_server(&k, &[]).is_err());
         assert!(open_from_server(&k, &[0x00, 0x01, 0x02]).is_err());
         assert!(split_from_client(&from_hex("ff00")).is_err());
-        assert_eq!(Message::decode(&[0x42]), Err(DecodeError::Invalid("message type")));
+        assert_eq!(
+            Message::decode(&[0x42]),
+            Err(DecodeError::Invalid("message type"))
+        );
         // Missing fields are still errors.
         let sound = Message::PlayerSound(PlayerSound {
             channel: nullport(),
@@ -362,11 +439,23 @@ mod tests {
     #[test]
     fn voice_with_extra_bytes_after_its_fields_still_plays() {
         // What a Paper server's packets looked like: the known fields, then more bytes.
-        let sound = PlayerSound { channel: nullport(), sender: nullport(), opus: vec![0x78, 1, 2], sequence: 9, distance: 48.0, flag: 0 };
+        let sound = PlayerSound {
+            channel: nullport(),
+            sender: nullport(),
+            opus: vec![0x78, 1, 2],
+            sequence: 9,
+            distance: 48.0,
+            flag: 0,
+        };
         let mut plain = Message::PlayerSound(sound.clone()).encode();
         plain.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(Message::decode(&plain), Ok(Message::PlayerSound(sound)));
-        let mut mic = Message::Mic(MicFrame { opus: vec![1], sequence: 0, flag: 0 }).encode();
+        let mut mic = Message::Mic(MicFrame {
+            opus: vec![1],
+            sequence: 0,
+            flag: 0,
+        })
+        .encode();
         mic.push(0);
         assert!(matches!(Message::decode(&mic), Ok(Message::Mic(_))));
     }
@@ -374,8 +463,14 @@ mod tests {
     #[test]
     fn signal_messages_tolerate_a_body() {
         // A server that adds data after an ack's type still gets through the handshake.
-        assert_eq!(Message::decode(&[0x06, 1, 2, 3]), Ok(Message::AuthenticateAck));
-        assert_eq!(Message::decode(&[0x0a, 0xff]), Ok(Message::ConnectionCheckAck));
+        assert_eq!(
+            Message::decode(&[0x06, 1, 2, 3]),
+            Ok(Message::AuthenticateAck)
+        );
+        assert_eq!(
+            Message::decode(&[0x0a, 0xff]),
+            Ok(Message::ConnectionCheckAck)
+        );
         assert_eq!(Message::decode(&[0x08, 0x00]), Ok(Message::KeepAlive));
     }
 

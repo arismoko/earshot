@@ -36,13 +36,23 @@ impl Encoder {
             Codec::RestrictedLowDelay => Application::RestrictedLowDelay,
         };
         let inner = OpusEncoder::new(SAMPLE_RATE as i32, 1, app).map_err(CodecError)?;
-        Ok(Self { inner, out: vec![0; MAX_PACKET] })
+        Ok(Self {
+            inner,
+            out: vec![0; MAX_PACKET],
+        })
     }
 
     /// Encodes exactly one 20 ms frame. `max_bytes` caps the packet (the server's MTU).
-    pub fn encode(&mut self, frame: &[f32; FRAME_SAMPLES], max_bytes: usize) -> Result<Vec<u8>, CodecError> {
+    pub fn encode(
+        &mut self,
+        frame: &[f32; FRAME_SAMPLES],
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, CodecError> {
         let cap = max_bytes.clamp(1, MAX_PACKET);
-        let n = self.inner.encode(frame, FRAME_SAMPLES, &mut self.out[..cap]).map_err(CodecError)?;
+        let n = self
+            .inner
+            .encode(frame, FRAME_SAMPLES, &mut self.out[..cap])
+            .map_err(CodecError)?;
         Ok(self.out[..n].to_vec())
     }
 }
@@ -54,14 +64,19 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new() -> Result<Self, CodecError> {
-        Ok(Self { inner: OpusDecoder::new(SAMPLE_RATE as i32, 1).map_err(CodecError)? })
+        Ok(Self {
+            inner: OpusDecoder::new(SAMPLE_RATE as i32, 1).map_err(CodecError)?,
+        })
     }
 
     /// Decodes a frame, or with `None` makes up a plausible one for a lost packet
     /// (Opus packet-loss concealment), so a gap doesn't click.
     pub fn decode(&mut self, packet: Option<&[u8]>) -> Result<[f32; FRAME_SAMPLES], CodecError> {
         let mut out = [0f32; FRAME_SAMPLES];
-        let n = self.inner.decode(packet.unwrap_or(&[]), FRAME_SAMPLES, &mut out).map_err(CodecError)?;
+        let n = self
+            .inner
+            .decode(packet.unwrap_or(&[]), FRAME_SAMPLES, &mut out)
+            .map_err(CodecError)?;
         if n != FRAME_SAMPLES {
             return Err(CodecError("frame is not 20 ms"));
         }
@@ -90,7 +105,8 @@ mod tests {
     #[test]
     fn decodes_a_captured_svc_frame() {
         // NullPort404's first frame (captures 03 and 05).
-        let frame = from_hex("780be4c136f8455dea51258bd593cf3a29592005396b51ee9559584a3e1b296cff00");
+        let frame =
+            from_hex("780be4c136f8455dea51258bd593cf3a29592005396b51ee9559584a3e1b296cff00");
         let pcm = Decoder::new().unwrap().decode(Some(&frame)).unwrap();
         assert!(pcm.iter().all(|s| s.is_finite() && s.abs() <= 1.5));
     }
@@ -110,7 +126,10 @@ mod tests {
         }
         let level = rms(&last);
         let expected = 0.5 / 2f32.sqrt();
-        assert!((level - expected).abs() < expected * 0.3, "tone level {level}, expected about {expected}");
+        assert!(
+            (level - expected).abs() < expected * 0.3,
+            "tone level {level}, expected about {expected}"
+        );
     }
 
     #[test]
@@ -120,7 +139,10 @@ mod tests {
         let mut enc = Encoder::new(Codec::Voip).unwrap();
         let packet = enc.encode(&tone(300.0, 0), MAX_PACKET).unwrap();
         let config = packet[0] >> 3;
-        assert!([3, 7, 11, 13, 15, 19, 23, 27, 31].contains(&config), "config {config} is not a 20 ms frame");
+        assert!(
+            [3, 7, 11, 13, 15, 19, 23, 27, 31].contains(&config),
+            "config {config} is not a 20 ms frame"
+        );
         assert_eq!(packet[0] & 0x04, 0, "mono");
     }
 
@@ -129,10 +151,14 @@ mod tests {
         let mut enc = Encoder::new(Codec::Voip).unwrap();
         let mut dec = Decoder::new().unwrap();
         for i in 0..10 {
-            dec.decode(Some(&enc.encode(&tone(440.0, i), MAX_PACKET).unwrap())).unwrap();
+            dec.decode(Some(&enc.encode(&tone(440.0, i), MAX_PACKET).unwrap()))
+                .unwrap();
         }
         let concealed = dec.decode(None).unwrap();
-        assert!(rms(&concealed) > 0.01, "a lost frame mid-tone shouldn't be silence");
+        assert!(
+            rms(&concealed) > 0.01,
+            "a lost frame mid-tone shouldn't be silence"
+        );
     }
 
     #[test]

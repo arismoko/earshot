@@ -2,7 +2,7 @@
 //! (PROTOCOL.md, section 1). Each type knows its channel name and encodes or decodes the
 //! channel's data, not including the channel name itself.
 
-use crate::wire::{DecodeError, WireReader, Uuid, Writer};
+use crate::wire::{DecodeError, Uuid, WireReader, Writer};
 
 /// SVC compatibility version these messages match (SVC 2.6.27, from the server log).
 pub const COMPATIBILITY_VERSION: i32 = 20;
@@ -48,7 +48,10 @@ pub fn encode_register(channels: &[&str]) -> Vec<u8> {
 
 /// Decodes a `minecraft:register` payload into channel names.
 pub fn decode_register(data: &[u8]) -> Vec<String> {
-    data.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect()
+    data.split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
 }
 
 /// Whether a server's `minecraft:register` means it runs SVC.
@@ -71,7 +74,9 @@ impl RequestSecret {
 
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut r = WireReader::new(data);
-        let msg = Self { compatibility_version: r.i32("compatibility version")? };
+        let msg = Self {
+            compatibility_version: r.i32("compatibility version")?,
+        };
         r.finish()?;
         Ok(msg)
     }
@@ -172,7 +177,10 @@ impl Secret {
         // `[IPv6]:port` or `[IPv6]`.
         if let Some(rest) = vh.strip_prefix('[') {
             if let Some((host, after)) = rest.split_once(']') {
-                let port = after.strip_prefix(':').and_then(|p| p.parse::<u16>().ok()).unwrap_or(default_port);
+                let port = after
+                    .strip_prefix(':')
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .unwrap_or(default_port);
                 return (host.to_string(), port);
             }
         }
@@ -190,7 +198,9 @@ impl Secret {
 
 /// `host` without the brackets an IPv6 address wears beside a port (`[::1]` -> `::1`).
 fn unbracket(host: &str) -> &str {
-    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 /// Client -> server: voice chat switched off (`true`) or on (`false`). Muting sends nothing.
@@ -206,7 +216,9 @@ impl UpdateState {
 
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut r = WireReader::new(data);
-        let msg = Self { disabled: r.bool("disabled")? };
+        let msg = Self {
+            disabled: r.bool("disabled")?,
+        };
         r.finish()?;
         Ok(msg)
     }
@@ -226,7 +238,11 @@ pub struct PlayerState {
 
 impl PlayerState {
     fn write(&self, w: &mut Writer) {
-        w.bool(self.disabled).bool(self.disconnected).uuid(&self.player).string(&self.name).bool(self.group.is_some());
+        w.bool(self.disabled)
+            .bool(self.disconnected)
+            .uuid(&self.player)
+            .string(&self.name)
+            .bool(self.group.is_some());
         if let Some(g) = &self.group {
             w.uuid(g);
         }
@@ -238,7 +254,11 @@ impl PlayerState {
             disconnected: r.bool("disconnected")?,
             player: r.uuid("player")?,
             name: r.string("name")?,
-            group: if r.bool("has group")? { Some(r.uuid("group")?) } else { None },
+            group: if r.bool("has group")? {
+                Some(r.uuid("group")?)
+            } else {
+                None
+            },
         })
     }
 
@@ -351,16 +371,30 @@ pub struct Group {
 impl Group {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
-        w.uuid(&self.id).string(&self.name).bool(self.has_password).raw(&self.flags).raw(&self.kind.to_u16().to_be_bytes());
+        w.uuid(&self.id)
+            .string(&self.name)
+            .bool(self.has_password)
+            .raw(&self.flags)
+            .raw(&self.kind.to_u16().to_be_bytes());
         w.into_bytes()
     }
 
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut r = WireReader::new(data);
-        let (id, name, has_password) = (r.uuid("group id")?, r.string("group name")?, r.bool("has password")?);
+        let (id, name, has_password) = (
+            r.uuid("group id")?,
+            r.string("group name")?,
+            r.bool("has password")?,
+        );
         let flags: [u8; 2] = r.take(2, "group flags")?.try_into().unwrap();
         let kind = r.take(2, "group type")?;
-        Ok(Self { id, name, has_password, flags, kind: GroupType::from_u16(u16::from_be_bytes([kind[0], kind[1]])) })
+        Ok(Self {
+            id,
+            name,
+            has_password,
+            flags,
+            kind: GroupType::from_u16(u16::from_be_bytes([kind[0], kind[1]])),
+        })
     }
 }
 
@@ -388,10 +422,18 @@ impl CreateGroup {
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut r = WireReader::new(data);
         let name = r.string("group name")?;
-        let password = if r.bool("has password")? { Some(r.string("password")?) } else { None };
+        let password = if r.bool("has password")? {
+            Some(r.string("password")?)
+        } else {
+            None
+        };
         let kind = r.take(2, "group type")?;
         r.finish()?;
-        Ok(Self { name, password, kind: GroupType::from_u16(u16::from_be_bytes([kind[0], kind[1]])) })
+        Ok(Self {
+            name,
+            password,
+            kind: GroupType::from_u16(u16::from_be_bytes([kind[0], kind[1]])),
+        })
     }
 }
 
@@ -417,7 +459,11 @@ impl SetGroup {
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut r = WireReader::new(data);
         let group = r.uuid("group id")?;
-        let password = if r.bool("has password")? { Some(r.string("password")?) } else { None };
+        let password = if r.bool("has password")? {
+            Some(r.string("password")?)
+        } else {
+            None
+        };
         r.finish()?;
         Ok(Self { group, password })
     }
@@ -434,8 +480,15 @@ pub struct JoinedGroup {
 impl JoinedGroup {
     pub fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut r = WireReader::new(data);
-        let group = if r.bool("in a group")? { Some(r.uuid("group")?) } else { None };
-        Ok(Self { group, wrong_password: r.bool("wrong password")? })
+        let group = if r.bool("in a group")? {
+            Some(r.uuid("group")?)
+        } else {
+            None
+        };
+        Ok(Self {
+            group,
+            wrong_password: r.bool("wrong password")?,
+        })
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -483,9 +536,13 @@ impl ServerMessage {
             STATE => PlayerState::decode(data).map(ServerMessage::State),
             STATES => PlayerState::decode_list(data).map(ServerMessage::States),
             ADD_GROUP => Group::decode(data).map(ServerMessage::AddGroup),
-            REMOVE_GROUP => WireReader::new(data).uuid("group id").map(ServerMessage::RemoveGroup),
+            REMOVE_GROUP => WireReader::new(data)
+                .uuid("group id")
+                .map(ServerMessage::RemoveGroup),
             JOINED_GROUP => JoinedGroup::decode(data).map(ServerMessage::JoinedGroup),
-            REMOVE_STATE => WireReader::new(data).uuid("player").map(ServerMessage::RemoveState),
+            REMOVE_STATE => WireReader::new(data)
+                .uuid("player")
+                .map(ServerMessage::RemoveState),
             other => Ok(ServerMessage::Other(other.to_string())),
         })
     }
@@ -504,8 +561,17 @@ mod tests {
     fn request_secret_matches_capture() {
         // Capture 03, client -> server: just the compatibility version.
         let data = from_hex("00000014");
-        assert_eq!(RequestSecret::decode(&data).unwrap().compatibility_version, COMPATIBILITY_VERSION);
-        assert_eq!(RequestSecret { compatibility_version: 20 }.encode(), data);
+        assert_eq!(
+            RequestSecret::decode(&data).unwrap().compatibility_version,
+            COMPATIBILITY_VERSION
+        );
+        assert_eq!(
+            RequestSecret {
+                compatibility_version: 20
+            }
+            .encode(),
+            data
+        );
     }
 
     #[test]
@@ -558,21 +624,43 @@ mod tests {
     fn udp_target_fills_in_from_the_game_connection() {
         let joined = "mc.example.test";
         assert_eq!(sample_secret("").udp_target(joined), (joined.into(), 24454));
-        assert_eq!(sample_secret("24455").udp_target(joined), (joined.into(), 24455));
-        assert_eq!(sample_secret("10.0.0.5").udp_target(joined), ("10.0.0.5".into(), 24454));
-        assert_eq!(sample_secret("10.0.0.5:24455").udp_target(joined), ("10.0.0.5".into(), 24455));
-        assert_eq!(sample_secret("::1").udp_target(joined), ("::1".into(), 24454));
+        assert_eq!(
+            sample_secret("24455").udp_target(joined),
+            (joined.into(), 24455)
+        );
+        assert_eq!(
+            sample_secret("10.0.0.5").udp_target(joined),
+            ("10.0.0.5".into(), 24454)
+        );
+        assert_eq!(
+            sample_secret("10.0.0.5:24455").udp_target(joined),
+            ("10.0.0.5".into(), 24455)
+        );
+        assert_eq!(
+            sample_secret("::1").udp_target(joined),
+            ("::1".into(), 24454)
+        );
     }
 
     #[test]
     fn udp_target_takes_bracketed_ipv6() {
-        assert_eq!(sample_secret("[::1]:24455").udp_target("x"), ("::1".into(), 24455));
-        assert_eq!(sample_secret("[2001:db8::7]").udp_target("x"), ("2001:db8::7".into(), 24454));
+        assert_eq!(
+            sample_secret("[::1]:24455").udp_target("x"),
+            ("::1".into(), 24455)
+        );
+        assert_eq!(
+            sample_secret("[2001:db8::7]").udp_target("x"),
+            ("2001:db8::7".into(), 24454)
+        );
         // The joined host may be bracketed too.
         assert_eq!(sample_secret("").udp_target("[::1]"), ("::1".into(), 24454));
         // What comes out resolves as an address.
         let (host, port) = sample_secret("[::1]:24455").udp_target("x");
-        assert!((host.as_str(), port).to_socket_addrs().is_ok_and(|mut a| a.next().is_some_and(|a| a.is_ipv6())));
+        assert!(
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .is_ok_and(|mut a| a.next().is_some_and(|a| a.is_ipv6()))
+        );
     }
 
     #[test]
@@ -601,8 +689,14 @@ mod tests {
         ));
         let list = PlayerState::decode_list(&data).unwrap();
         assert_eq!(list.len(), 2);
-        assert_eq!((list[0].name.as_str(), list[0].disconnected), ("AIOMarcus", true));
-        assert_eq!((list[1].name.as_str(), list[1].disconnected), ("NullPort404", false));
+        assert_eq!(
+            (list[0].name.as_str(), list[0].disconnected),
+            ("AIOMarcus", true)
+        );
+        assert_eq!(
+            (list[1].name.as_str(), list[1].disconnected),
+            ("NullPort404", false)
+        );
         assert_eq!(PlayerState::encode_list(&list), data);
     }
 
@@ -619,9 +713,14 @@ mod tests {
         let channels = decode_register(from_server);
         assert_eq!(channels, SERVER_RECEIVES);
         assert!(server_has_voice(&channels));
-        assert!(!server_has_voice(&decode_register(b"minecraft:brand\0fabric:registry/sync")));
+        assert!(!server_has_voice(&decode_register(
+            b"minecraft:brand\0fabric:registry/sync"
+        )));
         assert_eq!(encode_register(SERVER_RECEIVES), from_server);
-        assert_eq!(decode_register(&encode_register(CLIENT_RECEIVES)), CLIENT_RECEIVES);
+        assert_eq!(
+            decode_register(&encode_register(CLIENT_RECEIVES)),
+            CLIENT_RECEIVES
+        );
     }
 
     // Capture 06 (NullPort404 on Java SVC, AIOMarcus on Earshot), exact bytes.
@@ -631,10 +730,23 @@ mod tests {
     fn create_group_matches_capture() {
         // 191.69 s: "Test1", no password.
         let normal = GroupType::Normal;
-        assert_eq!(CreateGroup { name: "Test1".into(), password: None, kind: normal }.encode(), from_hex("05 5465737431 00 0000"));
+        assert_eq!(
+            CreateGroup {
+                name: "Test1".into(),
+                password: None,
+                kind: normal
+            }
+            .encode(),
+            from_hex("05 5465737431 00 0000")
+        );
         // 213.54 s: "TestPassword" with password "1221".
         assert_eq!(
-            CreateGroup { name: "TestPassword".into(), password: Some("1221".into()), kind: normal }.encode(),
+            CreateGroup {
+                name: "TestPassword".into(),
+                password: Some("1221".into()),
+                kind: normal
+            }
+            .encode(),
             from_hex("0c 5465737450617373776f7264 01 04 31323231 0000")
         );
     }
@@ -648,22 +760,55 @@ mod tests {
             ("t2", GroupType::Open, "02 7432 00 0001"),
             ("t3", GroupType::Isolated, "02 7433 00 0002"),
         ] {
-            assert_eq!(CreateGroup { name: name.into(), password: None, kind }.encode(), from_hex(bytes), "{name}");
+            assert_eq!(
+                CreateGroup {
+                    name: name.into(),
+                    password: None,
+                    kind
+                }
+                .encode(),
+                from_hex(bytes),
+                "{name}"
+            );
         }
         assert_eq!(
-            CreateGroup { name: "pw".into(), password: Some("1234".into()), kind: GroupType::Normal }.encode(),
+            CreateGroup {
+                name: "pw".into(),
+                password: Some("1234".into()),
+                kind: GroupType::Normal
+            }
+            .encode(),
             from_hex("02 7077 01 04 31323334 0000")
         );
         // The server's add_group for each: two zero bytes, then the type.
         for (data, kind, has_password) in [
-            ("26b5696659814ab9af5fe06523c05e4b 02 7431 00 0000 0000", GroupType::Normal, false),
-            ("7961e4bbeeb5458f8c41022ee252369a 02 7432 00 0000 0001", GroupType::Open, false),
-            ("7dd31de03a0d4a0cb18c89afeccabe91 02 7433 00 0000 0002", GroupType::Isolated, false),
-            ("69c097e7013644ae976d42e188195a5a 02 7077 01 0000 0000", GroupType::Normal, true),
+            (
+                "26b5696659814ab9af5fe06523c05e4b 02 7431 00 0000 0000",
+                GroupType::Normal,
+                false,
+            ),
+            (
+                "7961e4bbeeb5458f8c41022ee252369a 02 7432 00 0000 0001",
+                GroupType::Open,
+                false,
+            ),
+            (
+                "7dd31de03a0d4a0cb18c89afeccabe91 02 7433 00 0000 0002",
+                GroupType::Isolated,
+                false,
+            ),
+            (
+                "69c097e7013644ae976d42e188195a5a 02 7077 01 0000 0000",
+                GroupType::Normal,
+                true,
+            ),
         ] {
             let raw = from_hex(data);
             let g = Group::decode(&raw).unwrap();
-            assert_eq!((g.kind, g.has_password, g.flags), (kind, has_password, [0, 0]));
+            assert_eq!(
+                (g.kind, g.has_password, g.flags),
+                (kind, has_password, [0, 0])
+            );
             assert_eq!(g.encode(), raw, "round trip");
         }
         // A type capture 07 didn't show is kept as it came.
@@ -677,36 +822,74 @@ mod tests {
     fn a_server_reads_group_messages_as_captured() {
         // The bytes SVC's client sent in capture 07, read back.
         let open = CreateGroup::decode(&from_hex("02 7432 00 0001")).unwrap();
-        assert_eq!(open, CreateGroup { name: "t2".into(), password: None, kind: GroupType::Open });
+        assert_eq!(
+            open,
+            CreateGroup {
+                name: "t2".into(),
+                password: None,
+                kind: GroupType::Open
+            }
+        );
         let pw = CreateGroup::decode(&from_hex("02 7077 01 04 31323334 0000")).unwrap();
         assert_eq!(pw.password.as_deref(), Some("1234"));
-        let join = SetGroup::decode(&from_hex("69c097e7013644ae976d42e188195a5a 01 04 31323334")).unwrap();
+        let join =
+            SetGroup::decode(&from_hex("69c097e7013644ae976d42e188195a5a 01 04 31323334")).unwrap();
         assert_eq!(join.password.as_deref(), Some("1234"));
-        assert_eq!(SetGroup::decode(&from_hex("26b5696659814ab9af5fe06523c05e4b 00")).unwrap().password, None);
-        assert!(CreateGroup::decode(&from_hex("02 7432 00")).is_err(), "no type");
-        assert!(SetGroup::decode(&from_hex("26b56966 00")).is_err(), "short id");
+        assert_eq!(
+            SetGroup::decode(&from_hex("26b5696659814ab9af5fe06523c05e4b 00"))
+                .unwrap()
+                .password,
+            None
+        );
+        assert!(
+            CreateGroup::decode(&from_hex("02 7432 00")).is_err(),
+            "no type"
+        );
+        assert!(
+            SetGroup::decode(&from_hex("26b56966 00")).is_err(),
+            "short id"
+        );
     }
 
     #[test]
     fn a_wrong_password_matches_capture_7() {
         // 1025.96 s: set_group with "9999", answered "not in a group, wrong password".
         assert_eq!(
-            SetGroup { group: Uuid::parse("69c097e7013644ae976d42e188195a5a").unwrap(), password: Some("9999".into()) }.encode(),
+            SetGroup {
+                group: Uuid::parse("69c097e7013644ae976d42e188195a5a").unwrap(),
+                password: Some("9999".into())
+            }
+            .encode(),
             from_hex("69c097e7013644ae976d42e188195a5a 01 04 39393939")
         );
-        assert_eq!(JoinedGroup::decode(&from_hex("0001")).unwrap(), JoinedGroup { group: None, wrong_password: true });
+        assert_eq!(
+            JoinedGroup::decode(&from_hex("0001")).unwrap(),
+            JoinedGroup {
+                group: None,
+                wrong_password: true
+            }
+        );
     }
 
     #[test]
     fn add_group_matches_capture() {
         let data = from_hex(&format!("{GROUP_1} 05 5465737431 00 00000000"));
         let g = Group::decode(&data).unwrap();
-        assert_eq!((g.id.to_string().as_str(), g.name.as_str(), g.has_password), ("b055a396-43b4-4bff-b4c7-33305d73d293", "Test1", false));
+        assert_eq!(
+            (g.id.to_string().as_str(), g.name.as_str(), g.has_password),
+            ("b055a396-43b4-4bff-b4c7-33305d73d293", "Test1", false)
+        );
         assert_eq!(g.encode(), data);
         assert_eq!(g.kind, GroupType::Normal);
-        let pw = Group::decode(&from_hex("b001f0e7f366409a819249b20512c3bf 0c 5465737450617373776f7264 01 00000000")).unwrap();
+        let pw = Group::decode(&from_hex(
+            "b001f0e7f366409a819249b20512c3bf 0c 5465737450617373776f7264 01 00000000",
+        ))
+        .unwrap();
         assert!(pw.has_password);
-        assert_eq!(ServerMessage::decode(ADD_GROUP, &data), Some(Ok(ServerMessage::AddGroup(g))));
+        assert_eq!(
+            ServerMessage::decode(ADD_GROUP, &data),
+            Some(Ok(ServerMessage::AddGroup(g)))
+        );
     }
 
     #[test]
@@ -714,20 +897,40 @@ mod tests {
         let joined = from_hex(&format!("01 {GROUP_1} 00"));
         assert_eq!(
             JoinedGroup::decode(&joined).unwrap(),
-            JoinedGroup { group: Some(Uuid::parse(GROUP_1).unwrap()), wrong_password: false }
+            JoinedGroup {
+                group: Some(Uuid::parse(GROUP_1).unwrap()),
+                wrong_password: false
+            }
         );
-        assert_eq!(JoinedGroup::decode(&from_hex("0000")).unwrap(), JoinedGroup { group: None, wrong_password: false });
-        assert_eq!(JoinedGroup { group: Some(Uuid::parse(GROUP_1).unwrap()), wrong_password: false }.encode(), joined);
+        assert_eq!(
+            JoinedGroup::decode(&from_hex("0000")).unwrap(),
+            JoinedGroup {
+                group: None,
+                wrong_password: false
+            }
+        );
+        assert_eq!(
+            JoinedGroup {
+                group: Some(Uuid::parse(GROUP_1).unwrap()),
+                wrong_password: false
+            }
+            .encode(),
+            joined
+        );
         assert_eq!(
             ServerMessage::decode(REMOVE_GROUP, &from_hex(GROUP_1)),
-            Some(Ok(ServerMessage::RemoveGroup(Uuid::parse(GROUP_1).unwrap())))
+            Some(Ok(ServerMessage::RemoveGroup(
+                Uuid::parse(GROUP_1).unwrap()
+            )))
         );
     }
 
     #[test]
     fn a_state_can_carry_a_group() {
         // 191.70 s: NullPort404 now in Test1.
-        let data = from_hex(&format!("0000 {NULLPORT} 0b 4e756c6c506f7274343034 01 {GROUP_1}"));
+        let data = from_hex(&format!(
+            "0000 {NULLPORT} 0b 4e756c6c506f7274343034 01 {GROUP_1}"
+        ));
         let s = PlayerState::decode(&data).unwrap();
         assert_eq!(s.group, Some(Uuid::parse(GROUP_1).unwrap()));
         assert_eq!(s.encode(), data);
@@ -737,18 +940,45 @@ mod tests {
     fn set_group_hypothesis_encoding() {
         // Not observed: id, then the password as create_group carries it.
         let id = Uuid::parse(GROUP_1).unwrap();
-        assert_eq!(SetGroup { group: id, password: None }.encode(), from_hex(&format!("{GROUP_1} 00")));
-        assert_eq!(SetGroup { group: id, password: Some("pw".into()) }.encode(), from_hex(&format!("{GROUP_1} 01 02 7077")));
+        assert_eq!(
+            SetGroup {
+                group: id,
+                password: None
+            }
+            .encode(),
+            from_hex(&format!("{GROUP_1} 00"))
+        );
+        assert_eq!(
+            SetGroup {
+                group: id,
+                password: Some("pw".into())
+            }
+            .encode(),
+            from_hex(&format!("{GROUP_1} 01 02 7077"))
+        );
     }
 
     #[test]
     fn dispatch_by_channel() {
         assert!(ServerMessage::decode("minecraft:brand", &[]).is_none());
         assert_eq!(
-            ServerMessage::decode("voicechat:remove_category", &[1, 2]).unwrap().unwrap(),
+            ServerMessage::decode("voicechat:remove_category", &[1, 2])
+                .unwrap()
+                .unwrap(),
             ServerMessage::Other("voicechat:remove_category".into())
         );
-        let state = PlayerState { disabled: false, disconnected: false, player: Uuid([2; 16]), name: "A".into(), group: None };
-        assert_eq!(ServerMessage::decode(STATE, &state.encode()).unwrap().unwrap(), ServerMessage::State(state));
+        let state = PlayerState {
+            disabled: false,
+            disconnected: false,
+            player: Uuid([2; 16]),
+            name: "A".into(),
+            group: None,
+        };
+        assert_eq!(
+            ServerMessage::decode(STATE, &state.encode())
+                .unwrap()
+                .unwrap(),
+            ServerMessage::State(state)
+        );
     }
 }

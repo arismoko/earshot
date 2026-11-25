@@ -32,8 +32,8 @@ fn silk_decode_pitch(
                     [contour_index % PE_NB_CBKS_STAGE2_10MS] as i32
             }
         } else if nb_subfr == PE_MAX_NB_SUBFR as i32 {
-            crate::opus::silk::tables::SILK_CB_LAGS_STAGE3[k % 4][contour_index % PE_NB_CBKS_STAGE3_MAX]
-                as i32
+            crate::opus::silk::tables::SILK_CB_LAGS_STAGE3[k % 4]
+                [contour_index % PE_NB_CBKS_STAGE3_MAX] as i32
         } else {
             crate::opus::silk::tables::SILK_CB_LAGS_STAGE3_10_MS[k % 2]
                 [contour_index % PE_NB_CBKS_STAGE3_10MS] as i32

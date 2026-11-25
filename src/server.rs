@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use earshot_core::server::{ServerConfig, VoiceServer};
 use earshot_core::wire::Uuid;
-use mod_api::{ConfigPath, Host, ServerHost};
+use mod_api::{Host, ServerHost};
 
 const SETTINGS_FILE: &str = "server.txt";
 
@@ -104,10 +104,13 @@ pub fn tick(host: &mut dyn ServerHost) {
     let reads: &dyn Host = &*host;
     with_server(|side| {
         if side.settings.is_none() {
-            let lines = ConfigPath::new(SETTINGS_FILE)
+            let path = reads
+                .instance_dir()
+                .join("sunrise-mod-data")
+                .join("earshot")
+                .join(SETTINGS_FILE);
+            let lines = std::fs::read_to_string(path)
                 .ok()
-                .and_then(|p| reads.data_files().read(&p).ok())
-                .and_then(|b| String::from_utf8(b).ok())
                 .map(|t| parse(&t))
                 .unwrap_or_default();
             side.settings = Some(lines);

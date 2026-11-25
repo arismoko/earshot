@@ -6,6 +6,8 @@
 //! Earshot is an independent project, not affiliated with Simple Voice Chat.
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use earshot_core::activation::{Mode, PttKey};
 use earshot_core::engine::{GroupInfo, Settings, Status, VoiceClient};
@@ -15,11 +17,7 @@ use earshot_core::plugin;
 use earshot_core::spatial::Listener;
 use earshot_core::ui::{self, Draw, MicState};
 use earshot_core::wire::Uuid;
-use mod_api::client::hud_layout::PoseOp;
-use mod_api::{
-    ClientHost, ConfigPath, Corner, Corners, DrawContext, GuiDraw, Host, Identifier,
-    ServerboundPlayPacket,
-};
+use mod_api::{ClientHost, DrawContext, Host, Identifier, ServerboundPlayPacket, SettingKey};
 
 pub const ID: &str = "earshot";
 
@@ -57,8 +55,43 @@ const UNBOUND: &str = "key.keyboard.unknown";
 pub const SETTING_VOICE: &str = "voice_chat";
 pub const SETTING_DEBUG: &str = "debug";
 
+/// The keys `register_setting` gave the two switches, kept for reading their live values.
+/// `None` for a switch the host refused to register: it reads as its default.
+#[derive(Clone, Copy, Default)]
+pub struct SettingKeys {
+    pub voice: Option<SettingKey>,
+    pub debug: Option<SettingKey>,
+}
+
+static SETTING_KEYS: Mutex<SettingKeys> = Mutex::new(SettingKeys {
+    voice: None,
+    debug: None,
+});
+
+/// Keeps the keys issued by this registration pass (a reinstall issues new ones).
+pub fn set_setting_keys(keys: SettingKeys) {
+    *SETTING_KEYS.lock().unwrap_or_else(|e| e.into_inner()) = keys;
+}
+
+/// The settings page's two switches: whether voice is off, and whether debug info is on.
+fn switches(host: &dyn Host) -> (bool, bool) {
+    let keys = *SETTING_KEYS.lock().unwrap_or_else(|e| e.into_inner());
+    let read = |key: Option<SettingKey>, default: bool| {
+        key.and_then(|key| host.setting_bool(key).ok())
+            .unwrap_or(default)
+    };
+    (!read(keys.voice, true), read(keys.debug, false))
+}
+
+/// Earshot's data folder: `sunrise-mod-data/earshot` in the instance folder.
+fn data_dir(host: &dyn Host) -> PathBuf {
+    host.instance_dir().join("sunrise-mod-data").join(ID)
+}
+
 /// Players farther than this aren't listed in the menu (SVC's default voice distance).
 const MENU_PLAYER_RANGE: f64 = 48.0;
+/// The connecting line's distance from the screen's top left corner, in GUI pixels.
+const HUD_MARGIN: f32 = 2.0;
 /// The file the menu's settings and the players' volumes are kept in (the mod's data folder).
 const SETTINGS_FILE: &str = "client.txt";
 
@@ -101,7 +134,7 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
-fn with_state<R>(host: &dyn ClientHost, f: impl FnOnce(&mut State) -> R) -> R {
+fn with_state<R>(host: &dyn Host, f: impl FnOnce(&mut State) -> R) -> R {
     STATE.with(|cell| {
         let mut slot = cell.borrow_mut();
         let state = slot.get_or_insert_with(|| load(host));
@@ -123,18 +156,13 @@ fn parse(text: &str) -> HashMap<String, String> {
 }
 
 fn read_file(host: &dyn Host) -> HashMap<String, String> {
-    let Ok(path) = ConfigPath::new(SETTINGS_FILE) else {
-        return HashMap::new();
-    };
-    host.data_files()
-        .read(&path)
+    std::fs::read_to_string(data_dir(host).join(SETTINGS_FILE))
         .ok()
-        .and_then(|b| String::from_utf8(b).ok())
         .map(|t| parse(&t))
         .unwrap_or_default()
 }
 
-fn load(host: &dyn ClientHost) -> State {
+fn load(host: &dyn Host) -> State {
     let file = read_file(host);
     let get = |k: &str| file.get(k).cloned();
     let num = |k: &str, d: f32| get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
@@ -174,8 +202,7 @@ fn load(host: &dyn ClientHost) -> State {
     let client = VoiceClient::new(settings.clone());
     client.apply_settings(settings.clone());
     let (muted, deafened) = (flag("muted"), flag("deafened"));
-    let disabled = !host.setting_bool(SETTING_VOICE).unwrap_or(true);
-    let debug = host.setting_bool(SETTING_DEBUG).unwrap_or(false);
+    let (disabled, debug) = switches(host);
     client.set_muted(muted);
     client.set_deafened(deafened);
     client.set_disabled(disabled);
@@ -246,12 +273,11 @@ fn save(host: &dyn Host, s: &mut State) {
     }
     let mut lines: Vec<String> = s.file.iter().map(|(k, v)| format!("{k}={v}")).collect();
     lines.sort();
-    if let Ok(path) = ConfigPath::new(SETTINGS_FILE)
-        && let Err(e) = host
-            .data_files()
-            .write(&path, (lines.join("\n") + "\n").as_bytes())
+    let dir = data_dir(host);
+    if let Err(e) = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join(SETTINGS_FILE), lines.join("\n") + "\n"))
     {
-        eprintln!("[earshot] couldn't keep the settings: {e:?}");
+        eprintln!("[earshot] couldn't keep the settings: {e}");
     }
 }
 
@@ -512,9 +538,8 @@ fn open_page(host: &mut dyn ClientHost, page: Page) {
 }
 
 /// The settings page changed: voice on or off, debug info.
-pub fn page_changed(host: &dyn ClientHost) {
-    let disabled = !host.setting_bool(SETTING_VOICE).unwrap_or(true);
-    let debug = host.setting_bool(SETTING_DEBUG).unwrap_or(false);
+pub fn page_changed(host: &dyn Host) {
+    let (disabled, debug) = switches(host);
     with_state(host, |s| {
         s.disabled = disabled;
         s.client.set_disabled(disabled);
@@ -552,25 +577,18 @@ fn paint(draw: &mut dyn DrawContext, draws: &[Draw]) {
                 rgb,
                 scale,
             } => draw.text_scaled(text, *at, *scale, 0xFF00_0000 | rgb, true),
-            // `PlayerFaceExtractor` draws whole GUI pixels: the pose carries the panel's place
-            // and scale. A refused face (none this op can produce) leaves the rest drawn.
+            // A refused face leaves the rest drawn.
             Draw::Face { id, at, size } => {
-                let _ = draw.gui_paint(&[
-                    GuiDraw::Push(vec![
-                        PoseOp::Translate(at[0], at[1]),
-                        PoseOp::Scale(size / 8.0, size / 8.0),
-                    ]),
-                    GuiDraw::PlayerFace {
-                        uuid: u128::from_be_bytes(id.0),
-                        x: 0,
-                        y: 0,
-                        size: 8,
-                        hat: true,
-                        flip: false,
-                        color: 0xFFFF_FFFF,
-                    },
-                    GuiDraw::Pop,
-                ]);
+                let _ = draw.draw_gui(&mut |canvas| {
+                    canvas.player_face(
+                        u128::from_be_bytes(id.0),
+                        *at,
+                        *size,
+                        true,
+                        false,
+                        0xFFFF_FFFF,
+                    )
+                });
             }
         }
     }
@@ -593,7 +611,7 @@ fn mic_state(s: &Status) -> MicState {
 /// The HUD: the microphone icon, a line while connecting, and in a voice group the group
 /// panel (its members, who's talking lit up). Where they go, their size and whether they
 /// show come from the icon options.
-pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corners) {
+pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext) {
     let Some((status, o)) = with_existing(|s| (s.client.status(), s.settings.options.clone()))
     else {
         return;
@@ -605,7 +623,7 @@ pub fn hud(host: &dyn ClientHost, draw: &mut dyn DrawContext, corners: &mut Corn
         if o.show_hud_icons {
             let text = format!("Voice: {}", status.connection);
             let w = width(host, &text) + 8.0;
-            let (x, y) = corners.place(Corner::TopLeft, w, 13.0);
+            let (x, y) = (HUD_MARGIN, HUD_MARGIN);
             draw.fill([x, y, w, 13.0], 0x7800_0000);
             draw.text(&text, [x + 4.0, y + 3.0], 0xFFFF_AA55, true);
         }
