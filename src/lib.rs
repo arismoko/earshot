@@ -68,7 +68,7 @@ impl Hooks for Earshot {
             .and_then(|c| c.address)
             .unwrap_or_default()
             .to_owned();
-        client::plugin_message(host, &payload.channel, &payload.data, &server);
+        client::plugin_message(host, payload.channel, payload.data, &server);
     }
 
     /// A chat line from the server: voice chat lines in Earshot's own words.

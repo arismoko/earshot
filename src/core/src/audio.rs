@@ -79,7 +79,9 @@ impl AudioIo {
                             if stopping.load(Ordering::Relaxed) {
                                 break;
                             }
-                            match opened.and_then(|(name, handle)| Ok((start(device, &handle)?, name, handle))) {
+                            match opened.and_then(|(name, handle)| {
+                                Ok((start(device, &handle)?, name, handle))
+                            }) {
                                 Ok((true, name, handle)) => {
                                     stream = Some(handle);
                                     status(name);
@@ -120,9 +122,16 @@ impl Drop for AudioIo {
     }
 }
 
-fn pick(devices: impl Iterator<Item = cpal::Device>, name: Option<&str>, default: Option<cpal::Device>) -> Option<cpal::Device> {
+fn pick(
+    devices: impl Iterator<Item = cpal::Device>,
+    name: Option<&str>,
+    default: Option<cpal::Device>,
+) -> Option<cpal::Device> {
     if let Some(name) = name {
-        if let Some(d) = devices.into_iter().find(|d| d.name().ok().as_deref() == Some(name)) {
+        if let Some(d) = devices
+            .into_iter()
+            .find(|d| d.name().ok().as_deref() == Some(name))
+        {
             return Some(d);
         }
     }
@@ -131,7 +140,8 @@ fn pick(devices: impl Iterator<Item = cpal::Device>, name: Option<&str>, default
 
 // A chosen device that fails falls back to the system default, retaining the original error.
 fn with_fallback(
-    name: Option<&str>, open: impl Fn(Option<&str>) -> Result<(String, cpal::Stream), String>,
+    name: Option<&str>,
+    open: impl Fn(Option<&str>) -> Result<(String, cpal::Stream), String>,
 ) -> Result<(String, cpal::Stream), String> {
     open(name).or_else(|e| match name {
         Some(name) => open(None)
@@ -141,11 +151,19 @@ fn with_fallback(
     })
 }
 
-pub(crate) fn open_input(host: &cpal::Host, name: Option<&str>, capture: CaptureQueue) -> Result<(String, cpal::Stream), String> {
+pub(crate) fn open_input(
+    host: &cpal::Host,
+    name: Option<&str>,
+    capture: CaptureQueue,
+) -> Result<(String, cpal::Stream), String> {
     with_fallback(name, |name| try_open_input(host, name, capture.clone()))
 }
 
-fn try_open_input(host: &cpal::Host, name: Option<&str>, capture: CaptureQueue) -> Result<(String, cpal::Stream), String> {
+fn try_open_input(
+    host: &cpal::Host,
+    name: Option<&str>,
+    capture: CaptureQueue,
+) -> Result<(String, cpal::Stream), String> {
     let devices = host.input_devices().map_err(|e| e.to_string())?;
     let device = pick(devices, name, host.default_input_device()).ok_or("no microphone found")?;
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
@@ -159,10 +177,17 @@ fn try_open_input(host: &cpal::Host, name: Option<&str>, capture: CaptureQueue) 
     }?;
     // Left paused: `AudioIo`'s `start` plays it.
     let _ = stream.pause();
-    Ok((device.name().unwrap_or_else(|_| "microphone".into()), stream))
+    Ok((
+        device.name().unwrap_or_else(|_| "microphone".into()),
+        stream,
+    ))
 }
 
-fn build_input<T>(device: &cpal::Device, config: &cpal::StreamConfig, capture: CaptureQueue) -> Result<cpal::Stream, String>
+fn build_input<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    capture: CaptureQueue,
+) -> Result<cpal::Stream, String>
 where
     T: SizedSample + Sample,
     f32: FromSample<T>,
@@ -195,11 +220,19 @@ where
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn open_output(host: &cpal::Host, name: Option<&str>, playback: PlaybackQueue) -> Result<(String, cpal::Stream), String> {
+pub(crate) fn open_output(
+    host: &cpal::Host,
+    name: Option<&str>,
+    playback: PlaybackQueue,
+) -> Result<(String, cpal::Stream), String> {
     with_fallback(name, |name| try_open_output(host, name, playback.clone()))
 }
 
-fn try_open_output(host: &cpal::Host, name: Option<&str>, playback: PlaybackQueue) -> Result<(String, cpal::Stream), String> {
+fn try_open_output(
+    host: &cpal::Host,
+    name: Option<&str>,
+    playback: PlaybackQueue,
+) -> Result<(String, cpal::Stream), String> {
     let devices = host.output_devices().map_err(|e| e.to_string())?;
     let device = pick(devices, name, host.default_output_device()).ok_or("no speakers found")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
@@ -215,7 +248,11 @@ fn try_open_output(host: &cpal::Host, name: Option<&str>, playback: PlaybackQueu
     Ok((device.name().unwrap_or_else(|_| "speakers".into()), stream))
 }
 
-fn build_output<T>(device: &cpal::Device, config: &cpal::StreamConfig, playback: PlaybackQueue) -> Result<cpal::Stream, String>
+fn build_output<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    playback: PlaybackQueue,
+) -> Result<cpal::Stream, String>
 where
     T: SizedSample + Sample + FromSample<f32>,
 {

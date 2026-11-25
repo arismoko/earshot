@@ -86,7 +86,12 @@ impl VoiceKey {
         let j0 = j0(nonce.try_into().unwrap());
         let expected = self.tag(j0, aad, ciphertext);
         // Compare without an early exit, so timing doesn't reveal how many bytes matched.
-        if expected.iter().zip(tag).fold(0u8, |acc, (a, b)| acc | (a ^ b)) != 0 {
+        if expected
+            .iter()
+            .zip(tag)
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+        {
             return Err(CryptoError::BadTag);
         }
         let mut plain = ciphertext.to_vec();
@@ -181,7 +186,10 @@ mod tests {
     fn gcm_spec_test_case_2() {
         let k = key("00000000000000000000000000000000");
         let sealed = k.seal_with_nonce(&nonce("000000000000000000000000"), &[0u8; 16]);
-        assert_eq!(&sealed[12..], &from_hex("0388dace60b6a392f328c2b971b2fe78 ab6e47d42cec13bdf53a67b21257bddf")[..]);
+        assert_eq!(
+            &sealed[12..],
+            &from_hex("0388dace60b6a392f328c2b971b2fe78 ab6e47d42cec13bdf53a67b21257bddf")[..]
+        );
     }
 
     #[test]
@@ -197,7 +205,12 @@ mod tests {
         // 60-byte plaintext (a partial last block) and 20 bytes of AAD exercise the padding paths.
         let plain = &from_hex(P3)[..60];
         let cipher = &from_hex(C3)[..60];
-        let sealed = [from_hex(IV3), cipher.to_vec(), from_hex("5bc94fbc3221a5db94fae95ae7121a47")].concat();
+        let sealed = [
+            from_hex(IV3),
+            cipher.to_vec(),
+            from_hex("5bc94fbc3221a5db94fae95ae7121a47"),
+        ]
+        .concat();
         let aad = from_hex("feedfacedeadbeeffeedfacedeadbeefabaddad2");
         assert_eq!(key(K3).open_with_aad(&sealed, &aad).unwrap(), plain);
     }
@@ -206,7 +219,10 @@ mod tests {
     fn rejects_altered_packets_and_wrong_keys() {
         let k = key(K3);
         let mut sealed = k.seal(b"hello").unwrap();
-        assert_eq!(key("00000000000000000000000000000000").open(&sealed), Err(CryptoError::BadTag));
+        assert_eq!(
+            key("00000000000000000000000000000000").open(&sealed),
+            Err(CryptoError::BadTag)
+        );
         sealed[13] ^= 1;
         assert_eq!(k.open(&sealed), Err(CryptoError::BadTag));
         assert_eq!(k.open(&sealed[..27]), Err(CryptoError::TooShort));

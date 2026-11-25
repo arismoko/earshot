@@ -163,7 +163,11 @@ impl<'a> WireReader<'a> {
 
     /// Fails unless every byte has been read.
     pub fn finish(self) -> Result<(), DecodeError> {
-        if self.buf.is_empty() { Ok(()) } else { Err(DecodeError::TrailingBytes(self.buf.len())) }
+        if self.buf.is_empty() {
+            Ok(())
+        } else {
+            Err(DecodeError::TrailingBytes(self.buf.len()))
+        }
     }
 }
 
@@ -244,7 +248,10 @@ impl Writer {
 /// Decodes a hex string; used by tests and fixtures.
 pub fn from_hex(s: &str) -> Vec<u8> {
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex")).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -267,25 +274,38 @@ mod tests {
             let mut w = Writer::new();
             w.varint(*value);
             assert_eq!(w.buf, *bytes, "encode {value}");
-            assert_eq!(WireReader::new(bytes).varint("v").unwrap(), *value, "decode {value}");
+            assert_eq!(
+                WireReader::new(bytes).varint("v").unwrap(),
+                *value,
+                "decode {value}"
+            );
         }
     }
 
     #[test]
     fn varint_rejects_six_bytes() {
-        assert_eq!(WireReader::new(&[0x80; 6]).varint("v"), Err(DecodeError::VarIntTooLong));
+        assert_eq!(
+            WireReader::new(&[0x80; 6]).varint("v"),
+            Err(DecodeError::VarIntTooLong)
+        );
     }
 
     #[test]
     fn truncated_input_names_the_field() {
-        assert_eq!(WireReader::new(&[0, 0]).i32("port"), Err(DecodeError::Truncated("port")));
+        assert_eq!(
+            WireReader::new(&[0, 0]).i32("port"),
+            Err(DecodeError::Truncated("port"))
+        );
     }
 
     #[test]
     fn fixed_size_numbers_are_big_endian() {
         let mut w = Writer::new();
         w.i32(24454).f64(48.0).f32(48.0).u64(2);
-        assert_eq!(w.buf, from_hex("00005f86 4048000000000000 42400000 0000000000000002"));
+        assert_eq!(
+            w.buf,
+            from_hex("00005f86 4048000000000000 42400000 0000000000000002")
+        );
         let mut r = WireReader::new(&w.buf);
         assert_eq!(r.i32("a").unwrap(), 24454);
         assert_eq!(r.f64("b").unwrap(), 48.0);
@@ -299,7 +319,10 @@ mod tests {
         let mut w = Writer::new();
         w.string("NullPort404");
         assert_eq!(w.buf[0], 11);
-        assert_eq!(WireReader::new(&w.buf).string("name").unwrap(), "NullPort404");
+        assert_eq!(
+            WireReader::new(&w.buf).string("name").unwrap(),
+            "NullPort404"
+        );
     }
 
     #[test]
@@ -312,6 +335,9 @@ mod tests {
     #[test]
     fn bools_must_be_zero_or_one() {
         assert_eq!(WireReader::new(&[1]).bool("b"), Ok(true));
-        assert_eq!(WireReader::new(&[2]).bool("b"), Err(DecodeError::Invalid("b")));
+        assert_eq!(
+            WireReader::new(&[2]).bool("b"),
+            Err(DecodeError::Invalid("b"))
+        );
     }
 }

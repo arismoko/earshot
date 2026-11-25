@@ -25,7 +25,10 @@ const SILENCE_TIMEOUT_MS: u64 = 10_000;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Send a plugin message over the game connection.
-    Plugin { channel: &'static str, data: Vec<u8> },
+    Plugin {
+        channel: &'static str,
+        data: Vec<u8>,
+    },
     /// Send a UDP message to the voice server.
     Udp(Message),
     /// The voice connection is up.
@@ -39,10 +42,20 @@ pub enum Phase {
     /// The server hasn't said it runs SVC (or we haven't joined one).
     Idle,
     /// `request_secret` sent at `since`.
-    Requested { since: u64 },
-    Authenticating { since: u64, last_sent: u64 },
-    Checking { since: u64, last_sent: u64 },
-    Connected { last_heard: u64 },
+    Requested {
+        since: u64,
+    },
+    Authenticating {
+        since: u64,
+        last_sent: u64,
+    },
+    Checking {
+        since: u64,
+        last_sent: u64,
+    },
+    Connected {
+        last_heard: u64,
+    },
     /// Gave up. A new join starts over.
     Failed(String),
 }
@@ -57,7 +70,12 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self { phase: Phase::Idle, secret: None, key: None, disabled: false }
+        Self {
+            phase: Phase::Idle,
+            secret: None,
+            key: None,
+            disabled: false,
+        }
     }
 
     pub fn secret(&self) -> Option<&Secret> {
@@ -78,22 +96,33 @@ impl Session {
 
     /// The server's `minecraft:register`.
     pub fn on_server_register(&mut self, channels: &[String], now: u64) -> Vec<Action> {
-        if !plugin::server_has_voice(channels) || !matches!(self.phase, Phase::Idle | Phase::Failed(_)) {
+        if !plugin::server_has_voice(channels)
+            || !matches!(self.phase, Phase::Idle | Phase::Failed(_))
+        {
             return vec![];
         }
         self.phase = Phase::Requested { since: now };
         vec![
-            Action::Plugin { channel: plugin::MINECRAFT_REGISTER, data: plugin::encode_register(plugin::CLIENT_RECEIVES) },
+            Action::Plugin {
+                channel: plugin::MINECRAFT_REGISTER,
+                data: plugin::encode_register(plugin::CLIENT_RECEIVES),
+            },
             request_secret(),
         ]
     }
 
     /// The server's `voicechat:secret`.
     pub fn on_secret(&mut self, secret: Secret, now: u64) -> Vec<Action> {
-        let auth = Message::Authenticate { player: secret.player, secret: secret.secret };
+        let auth = Message::Authenticate {
+            player: secret.player,
+            secret: secret.secret,
+        };
         self.key = Some(VoiceKey::new(&secret.secret));
         self.secret = Some(secret);
-        self.phase = Phase::Authenticating { since: now, last_sent: now };
+        self.phase = Phase::Authenticating {
+            since: now,
+            last_sent: now,
+        };
         vec![Action::Udp(auth)]
     }
 
@@ -101,7 +130,10 @@ impl Session {
     pub fn on_udp(&mut self, msg: &Message, now: u64) -> Vec<Action> {
         match (&self.phase, msg) {
             (Phase::Authenticating { .. }, Message::AuthenticateAck) => {
-                self.phase = Phase::Checking { since: now, last_sent: now };
+                self.phase = Phase::Checking {
+                    since: now,
+                    last_sent: now,
+                };
                 vec![Action::Udp(Message::ConnectionCheck)]
             }
             (Phase::Checking { .. }, Message::ConnectionCheckAck) => {
@@ -113,7 +145,11 @@ impl Session {
                 self.phase = Phase::Connected { last_heard: now };
                 // The server sends a keep-alive each `keep_alive_ms` and the client answers within
                 // about 20 ms (capture 03: s2c at 2.26 s, c2s at 2.28 s).
-                if *msg == Message::KeepAlive { vec![Action::Udp(Message::KeepAlive)] } else { vec![] }
+                if *msg == Message::KeepAlive {
+                    vec![Action::Udp(Message::KeepAlive)]
+                } else {
+                    vec![]
+                }
             }
             _ => vec![],
         }
@@ -163,7 +199,11 @@ impl Session {
             return vec![];
         }
         self.disabled = disabled;
-        if self.is_connected() { vec![self.update_state()] } else { vec![] }
+        if self.is_connected() {
+            vec![self.update_state()]
+        } else {
+            vec![]
+        }
     }
 
     /// Left the server.
@@ -174,7 +214,13 @@ impl Session {
     }
 
     fn update_state(&self) -> Action {
-        Action::Plugin { channel: plugin::UPDATE_STATE, data: UpdateState { disabled: self.disabled }.encode() }
+        Action::Plugin {
+            channel: plugin::UPDATE_STATE,
+            data: UpdateState {
+                disabled: self.disabled,
+            }
+            .encode(),
+        }
     }
 
     /// Gives up on this connection (also used by the engine when the UDP socket can't open).
@@ -194,7 +240,10 @@ impl Default for Session {
 fn request_secret() -> Action {
     Action::Plugin {
         channel: plugin::REQUEST_SECRET,
-        data: RequestSecret { compatibility_version: plugin::COMPATIBILITY_VERSION }.encode(),
+        data: RequestSecret {
+            compatibility_version: plugin::COMPATIBILITY_VERSION,
+        }
+        .encode(),
     }
 }
 
@@ -204,7 +253,10 @@ mod tests {
     use crate::plugin::Codec;
 
     fn svc_server() -> Vec<String> {
-        plugin::SERVER_RECEIVES.iter().map(|s| s.to_string()).collect()
+        plugin::SERVER_RECEIVES
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     fn secret() -> Secret {
@@ -235,7 +287,10 @@ mod tests {
     #[test]
     fn a_server_without_svc_is_left_alone() {
         let mut s = Session::new();
-        assert!(s.on_server_register(&["minecraft:brand".into()], 0).is_empty());
+        assert!(
+            s.on_server_register(&["minecraft:brand".into()], 0)
+                .is_empty()
+        );
         assert_eq!(s.phase, Phase::Idle);
     }
 
@@ -244,14 +299,41 @@ mod tests {
         let mut s = Session::new();
         let first = s.on_server_register(&svc_server(), 0);
         assert_eq!(first.len(), 2);
-        assert!(matches!(&first[0], Action::Plugin { channel: plugin::MINECRAFT_REGISTER, .. }));
-        assert_eq!(first[1], Action::Plugin { channel: plugin::REQUEST_SECRET, data: vec![0, 0, 0, 20] });
+        assert!(matches!(
+            &first[0],
+            Action::Plugin {
+                channel: plugin::MINECRAFT_REGISTER,
+                ..
+            }
+        ));
+        assert_eq!(
+            first[1],
+            Action::Plugin {
+                channel: plugin::REQUEST_SECRET,
+                data: vec![0, 0, 0, 20]
+            }
+        );
 
-        assert_eq!(s.on_secret(secret(), 100), [Action::Udp(Message::Authenticate { player: Uuid([1; 16]), secret: [5; 16] })]);
-        assert_eq!(s.on_udp(&Message::AuthenticateAck, 150), [Action::Udp(Message::ConnectionCheck)]);
+        assert_eq!(
+            s.on_secret(secret(), 100),
+            [Action::Udp(Message::Authenticate {
+                player: Uuid([1; 16]),
+                secret: [5; 16]
+            })]
+        );
+        assert_eq!(
+            s.on_udp(&Message::AuthenticateAck, 150),
+            [Action::Udp(Message::ConnectionCheck)]
+        );
         assert_eq!(
             s.on_udp(&Message::ConnectionCheckAck, 200),
-            [Action::Connected, Action::Plugin { channel: plugin::UPDATE_STATE, data: vec![0] }]
+            [
+                Action::Connected,
+                Action::Plugin {
+                    channel: plugin::UPDATE_STATE,
+                    data: vec![0]
+                }
+            ]
         );
     }
 
@@ -268,9 +350,15 @@ mod tests {
         s.on_server_register(&svc_server(), 0);
         s.on_secret(secret(), 0);
         assert!(s.poll(500).is_empty());
-        assert!(matches!(s.poll(1000)[..], [Action::Udp(Message::Authenticate { .. })]));
+        assert!(matches!(
+            s.poll(1000)[..],
+            [Action::Udp(Message::Authenticate { .. })]
+        ));
         assert!(s.poll(1500).is_empty());
-        assert!(matches!(s.poll(2000)[..], [Action::Udp(Message::Authenticate { .. })]));
+        assert!(matches!(
+            s.poll(2000)[..],
+            [Action::Udp(Message::Authenticate { .. })]
+        ));
         assert!(matches!(s.poll(15_000)[..], [Action::Lost(_)]));
         assert!(s.key().is_none());
     }
@@ -300,7 +388,10 @@ mod tests {
     #[test]
     fn keep_alives_are_answered() {
         let mut s = connected();
-        assert_eq!(s.on_udp(&Message::KeepAlive, 1200), [Action::Udp(Message::KeepAlive)]);
+        assert_eq!(
+            s.on_udp(&Message::KeepAlive, 1200),
+            [Action::Udp(Message::KeepAlive)]
+        );
     }
 
     #[test]
@@ -317,9 +408,21 @@ mod tests {
         let mut s = Session::new();
         assert!(s.set_disabled(true).is_empty(), "not connected yet");
         let mut s = connected();
-        assert_eq!(s.set_disabled(true), [Action::Plugin { channel: plugin::UPDATE_STATE, data: vec![1] }]);
+        assert_eq!(
+            s.set_disabled(true),
+            [Action::Plugin {
+                channel: plugin::UPDATE_STATE,
+                data: vec![1]
+            }]
+        );
         assert!(s.set_disabled(true).is_empty(), "no change, nothing sent");
-        assert_eq!(s.set_disabled(false), [Action::Plugin { channel: plugin::UPDATE_STATE, data: vec![0] }]);
+        assert_eq!(
+            s.set_disabled(false),
+            [Action::Plugin {
+                channel: plugin::UPDATE_STATE,
+                data: vec![0]
+            }]
+        );
     }
 
     #[test]

@@ -36,9 +36,14 @@ const HOVER_KEYS: [&str; 2] = ["hover_event", "hoverEvent"];
 const HOVER_TEXT_KEYS: [&str; 2] = ["value", "contents"];
 
 /// `o`'s hover text rewritten where needed: the event with its text replaced, `None` if unchanged.
-fn rewrite_hover(o: &Map<String, Value>, translated: &dyn Fn(&str) -> bool) -> Option<(String, Value)> {
+fn rewrite_hover(
+    o: &Map<String, Value>,
+    translated: &dyn Fn(&str) -> bool,
+) -> Option<(String, Value)> {
     for key in HOVER_KEYS {
-        let Some(Value::Object(event)) = o.get(key) else { continue };
+        let Some(Value::Object(event)) = o.get(key) else {
+            continue;
+        };
         for text_key in HOVER_TEXT_KEYS {
             if let Some(new) = event.get(text_key).and_then(|t| rewrite(t, translated)) {
                 let mut event = event.clone();
@@ -90,7 +95,8 @@ fn rewrite_object(o: &Map<String, Value>, translated: &dyn Fn(&str) -> bool) -> 
     let o = &o;
 
     let key = o.get("translate").and_then(Value::as_str);
-    let ours = key.filter(|k| k.starts_with(PREFIX) && !o.contains_key("fallback") && !translated(k));
+    let ours =
+        key.filter(|k| k.starts_with(PREFIX) && !o.contains_key("fallback") && !translated(k));
     let Some(key) = ours else {
         if !changed {
             return None;
@@ -124,7 +130,11 @@ fn rewrite_object(o: &Map<String, Value>, translated: &dyn Fn(&str) -> bool) -> 
         }
         (_, first) => {
             parts.push(Value::String(lead_in(key)));
-            parts.extend(first.into_iter().flat_map(|a| [Value::String(" ".into()), a]));
+            parts.extend(
+                first
+                    .into_iter()
+                    .flat_map(|a| [Value::String(" ".into()), a]),
+            );
         }
     }
     for arg in args {
@@ -132,15 +142,22 @@ fn rewrite_object(o: &Map<String, Value>, translated: &dyn Fn(&str) -> bool) -> 
         parts.push(arg);
     }
     parts.extend(extra);
-    let mut out: Map<String, Value> =
-        o.iter().filter(|(k, _)| !CONTENT_KEYS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut out: Map<String, Value> = o
+        .iter()
+        .filter(|(k, _)| !CONTENT_KEYS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     out.insert("text".into(), Value::String(String::new()));
     out.insert("extra".into(), Value::Array(parts));
     Some(Value::Object(out))
 }
 
 /// The components of a `with` or `extra` list, each rewritten where needed.
-fn list_of(list: Option<&Value>, translated: &dyn Fn(&str) -> bool, changed: &mut bool) -> Vec<Value> {
+fn list_of(
+    list: Option<&Value>,
+    translated: &dyn Fn(&str) -> bool,
+    changed: &mut bool,
+) -> Vec<Value> {
     let Some(Value::Array(items)) = list else {
         return Vec::new();
     };
@@ -205,13 +222,26 @@ mod tests {
     #[test]
     fn an_invite_gets_our_wording_and_keeps_its_arguments() {
         // chat.square_brackets is the game's own key; the test shows it bare.
-        let out = rewrite(&captured_invite(), &|k: &str| k == "chat.square_brackets").expect("rewritten");
-        assert_eq!(plain(&out), "muhnip invited you to the voice group e chat.square_brackets(Join)");
+        let out =
+            rewrite(&captured_invite(), &|k: &str| k == "chat.square_brackets").expect("rewritten");
+        assert_eq!(
+            plain(&out),
+            "muhnip invited you to the voice group e chat.square_brackets(Join)"
+        );
         assert!(out.get("translate").is_none() && out.get("with").is_none());
         let button = &out["extra"][4]["with"][0]["extra"][0];
-        assert_eq!(button["click_event"]["command"], "/voicechat join 7cc08ec3-3480-4739-8c01-b76bf237f0c6");
-        assert_eq!(plain(&button["hover_event"]["value"]), "Click to join this voice group");
-        assert_eq!(out["extra"][4]["color"], "green", "the button keeps its style");
+        assert_eq!(
+            button["click_event"]["command"],
+            "/voicechat join 7cc08ec3-3480-4739-8c01-b76bf237f0c6"
+        );
+        assert_eq!(
+            plain(&button["hover_event"]["value"]),
+            "Click to join this voice group"
+        );
+        assert_eq!(
+            out["extra"][4]["color"], "green",
+            "the button keeps its style"
+        );
     }
 
     #[test]
@@ -226,7 +256,8 @@ mod tests {
     fn keys_the_game_can_translate_or_with_a_fallback_stay() {
         let line = json!({"translate": "message.voicechat.invite", "with": ["A"]});
         assert!(rewrite(&line, &|k: &str| k == "message.voicechat.invite").is_none());
-        let fallback = json!({"translate": "message.voicechat.invite", "fallback": "%s invites you"});
+        let fallback =
+            json!({"translate": "message.voicechat.invite", "fallback": "%s invites you"});
         assert!(rewrite(&fallback, &none).is_none());
         let other = json!({"translate": "chat.type.text", "with": ["A", "hi"]});
         assert!(rewrite(&other, &none).is_none());
@@ -241,12 +272,21 @@ mod tests {
         let out = rewrite(&line, &none).expect("rewritten");
         assert_eq!(plain(&out), "[Server] Voice chat: group full Voice chat: x");
         let list = json!([{"text": "a "}, {"translate": "message.voicechat.invite"}]);
-        assert_eq!(plain(&rewrite(&list, &none).unwrap()), "a You were invited to a voice group");
+        assert_eq!(
+            plain(&rewrite(&list, &none).unwrap()),
+            "a You were invited to a voice group"
+        );
     }
 
     #[test]
     fn lead_ins() {
-        assert_eq!(lead_in("message.voicechat.invite"), "You were invited to a voice group");
-        assert_eq!(lead_in("message.voicechat.some_new.thing"), "Voice chat: some new thing");
+        assert_eq!(
+            lead_in("message.voicechat.invite"),
+            "You were invited to a voice group"
+        );
+        assert_eq!(
+            lead_in("message.voicechat.some_new.thing"),
+            "Voice chat: some new thing"
+        );
     }
 }

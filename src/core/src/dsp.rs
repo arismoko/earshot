@@ -25,7 +25,11 @@ impl HighPass {
     fn new(cutoff_hz: f32) -> Self {
         let rc = 1.0 / (2.0 * std::f32::consts::PI * cutoff_hz);
         let dt = 1.0 / SAMPLE_RATE as f32;
-        Self { a: rc / (rc + dt), prev_in: 0.0, prev_out: 0.0 }
+        Self {
+            a: rc / (rc + dt),
+            prev_in: 0.0,
+            prev_out: 0.0,
+        }
     }
 
     fn process(&mut self, x: f32) -> f32 {
@@ -62,7 +66,11 @@ impl Default for NoiseSuppressor {
 
 impl NoiseSuppressor {
     pub fn new() -> Self {
-        Self { hp: HighPass::new(80.0), floor_db: -60.0, gain: 1.0 }
+        Self {
+            hp: HighPass::new(80.0),
+            floor_db: -60.0,
+            gain: 1.0,
+        }
     }
 
     /// The current background estimate, dBFS (for the menu).
@@ -83,11 +91,16 @@ impl NoiseSuppressor {
         self.floor_db = (self.floor_db + (level - self.floor_db) * rate).max(MIN_FLOOR_DB);
 
         let above = level - self.floor_db;
-        let t = ((above - CLOSED_ABOVE_FLOOR_DB) / (OPEN_ABOVE_FLOOR_DB - CLOSED_ABOVE_FLOOR_DB)).clamp(0.0, 1.0);
+        let t = ((above - CLOSED_ABOVE_FLOOR_DB) / (OPEN_ABOVE_FLOOR_DB - CLOSED_ABOVE_FLOOR_DB))
+            .clamp(0.0, 1.0);
         // Smoothstep between closed and open.
         let target = CLOSED_GAIN + (1.0 - CLOSED_GAIN) * (t * t * (3.0 - 2.0 * t));
         // Open within a frame (don't clip word starts); close over several (no pumping).
-        let target = if target > self.gain { target } else { self.gain + (target - self.gain) * 0.35 };
+        let target = if target > self.gain {
+            target
+        } else {
+            self.gain + (target - self.gain) * 0.35
+        };
 
         let (from, n) = (self.gain, FRAME_SAMPLES as f32);
         for (i, s) in frame.iter_mut().enumerate() {
@@ -133,7 +146,10 @@ mod tests {
             out_level = level_dbfs(&f);
         }
         let raw = level_dbfs(&noise(&mut seed, 0.005));
-        assert!(out_level < raw - 15.0, "noise {raw:.1} dB came out at {out_level:.1} dB");
+        assert!(
+            out_level < raw - 15.0,
+            "noise {raw:.1} dB came out at {out_level:.1} dB"
+        );
     }
 
     #[test]
@@ -171,7 +187,10 @@ mod tests {
             last = f;
         }
         let raw = level_dbfs(&tone(20.0, 0.3, 50));
-        assert!(level_dbfs(&last) < raw - 10.0, "20 Hz rumble should be well down");
+        assert!(
+            level_dbfs(&last) < raw - 10.0,
+            "20 Hz rumble should be well down"
+        );
     }
 
     #[test]
@@ -185,6 +204,9 @@ mod tests {
         assert!(ns.floor_dbfs() >= MIN_FLOOR_DB);
         let mut f = tone(300.0, 0.2, 0);
         ns.process(&mut f);
-        assert!(level_dbfs(&f) > -25.0, "a voice after silence opens the gate at once");
+        assert!(
+            level_dbfs(&f) > -25.0,
+            "a voice after silence opens the gate at once"
+        );
     }
 }
