@@ -103,7 +103,7 @@ Earshot 1.x could host voice on a dedicated server and listened on UDP port 2445
 
 ## Install
 
-Made for Sunrise Dev build `f8aa80e`. It uses only the mod API, so the launcher also builds it on later Sunrise
+Made for Sunrise Dev build `bdad86d` (`dev-2026-11-25-bdad86d`). It uses only the mod API, so the launcher also builds it on later Sunrise
 builds where nothing it uses changed.
 
 From the Sunrise registry: open **Mods** in the launcher, find **Earshot**, and choose **Install**. The launcher
